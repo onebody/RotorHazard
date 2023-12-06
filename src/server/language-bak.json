@@ -33,6 +33,7 @@
 			"Callsign %d": "Rufzeichen %d",
 			"Callsign": "Rufzeichen",
 			"Cancel": "Abbrechen",
+
 			"Cannot force end: Node {0} is not crossing": "Ende kann nicht erzwungen werden; Node {0} ist nicht im Durchflug",
 			"Cannot perform operation on Node {0}: Not enough history": "Operation auf Node {0} kann nicht durchgeführt werden: Nicht genug Daten vorhanden",
 			"Capture": "Erfassen",
@@ -67,6 +68,7 @@
 			"Data Cleared": "Daten gelöscht",
 			"Database": "Datenbank",
 			"Deleted": "Gelöscht",
+
 			"Description": "Beschreibung",
 			"Discard Changes": "Änderungen rückgängig",
 			"Discard Laps": "Verwerfe Runden",
@@ -101,6 +103,7 @@
 			"ExitAt": "ExitAt",
 			"ExitAts": "ExitAts",
 			"Export race to CSV": "Exportiere Rennen nach CSV",
+
 			"Fade In": "Einblenden",
 			"Fade Out": "Ausblenden",
 			"Fastest 3 Consecutive Laps": "3 schnellste aufeinanderfolgende Runden",
@@ -208,6 +211,7 @@
 			"No Data": "Keine Daten vorhanden",
 			"No format restriction": "Kein Rennformat ausgewählt",
 			"No race loaded": "",
+
 			"No tuning adjustment made on node {0}: Requested Enterat of {1} is too close or below ExitAt.": "Für Node {0} wurden keine Tuning anpassungen vorgenommen: Gesetzter EnterAt Wert von {1} ist zu nach oder unter ExitAt Wert",
 			"Node Index": "Node Index",
 			"Node Overlay": "Pilot",
@@ -276,6 +280,8 @@
 			"Races, Heats, and Classes": "Rennen, Heats und Klassen",
 			"Races, Heats, and Pilots": "Rennen, Heats und Piloten",
 			"Races, Heats, Classes, and Pilots": "Rennen, Heats, Klassen und Piloten",
+
+
 			"Rainbow Cycle": "Regenbogenkreislauf",
 			"Rainbow": "Regenbogen",
 			"Randomize All": "Zufällig",
@@ -347,6 +353,7 @@
 			"Team Racing Mode": "Teamrennmodus",
 			"Team": "Team",
 			"Temperature (°C)": "Temperature (°C)",
+			
 			"The config.json file is invalid. Falling back to default configuration.": "Die config.json Datei ist ungültig. Die Standart Konfiguration wird genutzt",
 			"There is no saved race data available to view.": "Es sind keine gespeicherten Renndaten für die Anzeige verfürgbar",
 			"This is a single-class event.": "Dieses ist ein Einklassen-Event",
