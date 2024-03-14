@@ -10,6 +10,7 @@ from flask_socketio import emit
 from eventmanager import Evt
 import json
 import subprocess
+import re
 from collections import OrderedDict
 import gevent
 import RHUtils
@@ -17,6 +18,9 @@ from RHUtils import catchLogExceptionsWrapper
 from Database import ProgramMethod
 import logging
 logger = logging.getLogger(__name__)
+
+from FlaskAppObj import APP
+APP.app_context().push()
 
 class UIFieldType(Enum):
     TEXT = "text"
@@ -88,6 +92,10 @@ class RHUI():
         self._events = Events
 
         self._pilot_attributes = []
+        self._heat_attributes = []
+        self._raceclass_attributes = []
+        self._savedrace_attributes = []
+        self._raceformat_attributes = []
         self._ui_panels = []
         self._general_settings = []
         self._quickbuttons = []
@@ -102,16 +110,70 @@ class RHUI():
         else:
             self._pilot_attributes.append(field)
         return self._pilot_attributes
-    
-        
-        if not any(x.name == field.name for x in self._pilot_attributes):
-            self._pilot_attributes.append(field)
-            return self._pilot_attributes
-        # TODO: field redefine & warning
 
     @property
     def pilot_attributes(self):
         return self._pilot_attributes
+
+    # Heat Attributes
+    def register_heat_attribute(self, field:UIField):
+        for idx, attribute in enumerate(self._heat_attributes):
+            if attribute.name == field.name:
+                self._heat_attributes[idx] = field
+                logger.debug(F'Redefining heat attribute "{field.name}"')
+                break
+        else:
+            self._heat_attributes.append(field)
+        return self._heat_attributes
+
+    @property
+    def heat_attributes(self):
+        return self._heat_attributes
+
+    # Race Class Attributes
+    def register_raceclass_attribute(self, field:UIField):
+        for idx, attribute in enumerate(self._raceclass_attributes):
+            if attribute.name == field.name:
+                self._raceclass_attributes[idx] = field
+                logger.debug(F'Redefining raceclass attribute "{field.name}"')
+                break
+        else:
+            self._raceclass_attributes.append(field)
+        return self._raceclass_attributes
+
+    @property
+    def raceclass_attributes(self):
+        return self._raceclass_attributes
+
+    # Race Attributes
+    def register_savedrace_attribute(self, field:UIField):
+        for idx, attribute in enumerate(self._savedrace_attributes):
+            if attribute.name == field.name:
+                self._savedrace_attributes[idx] = field
+                logger.debug(F'Redefining savedrace attribute "{field.name}"')
+                break
+        else:
+            self._savedrace_attributes.append(field)
+        return self._savedrace_attributes
+
+    @property
+    def savedrace_attributes(self):
+        return self._savedrace_attributes
+
+    # Race Format Attributes
+    def register_raceformat_attribute(self, field:UIField):
+        for idx, attribute in enumerate(self._raceformat_attributes):
+            if attribute.name == field.name:
+                self._raceformat_attributes[idx] = field
+                logger.debug(F'Redefining raceformat attribute "{field.name}"')
+                break
+        else:
+            self._raceformat_attributes.append(field)
+        return self._raceformat_attributes
+
+    @property
+    def raceformat_attributes(self):
+        return self._raceformat_attributes
 
     # UI Panels
     def register_ui_panel(self, name, label, page, order=0):
@@ -243,27 +305,118 @@ class RHUI():
 
     def emit_priority_message(self, message, interrupt=False, caller=False, **params):
         ''' Emits message to all clients '''
-        emit_payload = {
-            'message': message,
-            'interrupt': interrupt
-        }
-        if ('nobroadcast' in params):
-            emit('priority_message', emit_payload)
-        else:
-            if interrupt:
-                self._events.trigger(Evt.MESSAGE_INTERRUPT, {
-                    'message': message,
-                    'interrupt': interrupt,
-                    'caller': caller
-                    })
+        if message and re.search(r"[0-z]", message):
+            logger.debug("Emitting {}: {}".format(("alert" if interrupt else "message"), message))
+            emit_payload = {
+                'message': message,
+                'interrupt': interrupt
+            }
+            if ('nobroadcast' in params):
+                emit('priority_message', emit_payload)
             else:
-                self._events.trigger(Evt.MESSAGE_STANDARD, {
-                    'message': message,
-                    'interrupt': interrupt,
-                    'caller': caller
-                    })
+                if interrupt:
+                    self._events.trigger(Evt.MESSAGE_INTERRUPT, {
+                        'message': message,
+                        'interrupt': interrupt,
+                        'caller': caller
+                        })
+                else:
+                    self._events.trigger(Evt.MESSAGE_STANDARD, {
+                        'message': message,
+                        'interrupt': interrupt,
+                        'caller': caller
+                        })
 
-            self._socket.emit('priority_message', emit_payload)
+                self._socket.emit('priority_message', emit_payload)
+
+    def emit_plugin_list(self, **params):
+        plugins = self._racecontext.serverstate.plugins
+
+        plugin_data = []
+        for plugin in plugins:
+            plugin_info = {
+                'name': None,
+                'author': None,
+                'author_uri': None,
+                'description': None,
+                'info_uri': None,
+                'license': None,
+                'license_uri': None,
+                'version': None,
+                'required_rhapi_version': None,
+                'update_uri': None,
+                'text_domain': None,
+            }
+            if plugin.meta:
+                for key, value in plugin.meta.items():
+                    if key in plugin_info:
+                        plugin_info[key] = value
+            else:
+                plugin_info['name'] = plugin.name
+
+            plugin_info['id'] = plugin.name
+            plugin_info['enabled'] = plugin.enabled
+            plugin_info['loaded'] = plugin.loaded
+            plugin_info['load_issue'] = plugin.load_issue
+
+            plugin_data.append(plugin_info)
+
+        emit_payload = {
+            'plugins': plugin_data
+        }
+
+        if ('nobroadcast' in params):
+            emit('plugin_list', emit_payload)
+        else:
+            self._socket.emit('plugin_list', emit_payload)
+
+    def emit_heat_plan_result(self, new_heat_id, calc_result):
+        heat = self._racecontext.rhdata.get_heat(new_heat_id)
+        heatNodes = []
+
+        heatNode_objs = self._racecontext.rhdata.get_heatNodes_by_heat(heat.id)
+        heatNode_objs.sort(key=lambda x: x.id)
+
+        profile_freqs = json.loads(self._racecontext.race.profile.frequencies)
+
+        for heatNode in heatNode_objs:
+            heatNode_data = {
+                'node_index': heatNode.node_index,
+                'pilot_id': heatNode.pilot_id,
+                'callsign': None,
+                'method': heatNode.method,
+                'seed_rank': heatNode.seed_rank,
+                'seed_id': heatNode.seed_id
+                }
+            if heatNode.pilot_id:
+                pilot = self._racecontext.rhdata.get_pilot(heatNode.pilot_id)
+                if pilot:
+                    heatNode_data['callsign'] = pilot.callsign
+                    if pilot.used_frequencies and heatNode.node_index is not None:
+                        used_freqs = json.loads(pilot.used_frequencies)
+                        heatNode_data['frequency_change'] = (used_freqs[-1]['f'] != profile_freqs["f"][heatNode.node_index])
+                    else:
+                        heatNode_data['frequency_change'] = True
+
+            heatNodes.append(heatNode_data)
+
+        emit_payload = {
+            'heat': new_heat_id,
+            'displayname': heat.display_name,
+            'slots': heatNodes,
+            'calc_result': calc_result
+        }
+
+        self._socket.emit('heat_plan_result', emit_payload)
+
+    def emit_race_stage(self, payload):
+        self._socket.emit('stage_ready', payload)
+
+    def emit_race_stop(self):
+        self._socket.emit('stop_timer')
+
+    def emit_clear_priority_messages(self):
+        self._socket.emit('clear_priority_messages')
 
     def emit_race_schedule(self):
         self._socket.emit('race_scheduled', {
@@ -519,6 +672,7 @@ class RHUI():
 
     def emit_race_list(self, **params):
         '''Emits race listing'''
+        profile_freqs = json.loads(self._racecontext.race.profile.frequencies)
         heats = {}
         for heat in self._racecontext.rhdata.get_heats():
             if self._racecontext.rhdata.savedRaceMetas_has_heat(heat.id):
@@ -537,6 +691,8 @@ class RHUI():
                             'callsign': nodepilot,
                             'pilot_id': pilotrace.pilot_id,
                             'node_index': pilotrace.node_index,
+                            'pilot_freq': self.get_pilot_freq_info(profile_freqs, pilotrace.frequency, \
+                                                                   pilotrace.node_index)
                         })
                     rounds[race.round_id] = {
                         'race_id': race.id,
@@ -1224,3 +1380,14 @@ class RHUI():
 
         emit('race_points_method_list', emit_payload)
 
+    def get_pilot_freq_info(self, profile_freqs, freq_val, node_idx):
+        try:       # if node freq matches then return band/channel and frequency
+            if freq_val == profile_freqs["f"][node_idx]:
+                band = profile_freqs["b"][node_idx]
+                chan = profile_freqs["c"][node_idx]
+                if band and chan:
+                    return "{}{} {}".format(band, chan, freq_val)
+        except:
+            pass
+        # if node freq does not match then just return frequency
+        return "{}".format(freq_val)

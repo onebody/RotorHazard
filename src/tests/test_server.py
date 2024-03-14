@@ -257,87 +257,6 @@ class ServerTest(unittest.TestCase):
         resp = self.get_response('heartbeat')
         self.assertEqual(resp['frequency'][0], 5888)
 
-# verify LiveTime compatibility
-
-    def test_livetime_get_version(self):
-        resp = self.client.emit('get_version', callback=True)
-        self.assertIn('major', resp)
-        self.assertIn('minor', resp)
-
-    def test_livetime_get_timestamp(self):
-        resp = self.client.emit('get_timestamp', callback=True)
-        self.assertIn('timestamp', resp)
-
-    def test_livetime_get_settings(self):
-        resp = self.client.emit('get_settings', callback=True)
-        self.assertIn('nodes', resp)
-        for n in resp['nodes']:
-            self.assertTrue('frequency' in n)
-            self.assertTrue('trigger_rssi' in n)
-
-    def test_livetime_set_calibration_threshold(self):
-        self.client.emit('set_calibration_threshold', {
-            'calibration_threshold': 0
-        })
-
-    def test_livetime_set_calibration_offset(self):
-        self.client.emit('set_calibration_offset', {
-            'calibration_offset': 0
-        })
-
-    def test_livetime_set_trigger_threshold(self):
-        self.client.emit('set_trigger_threshold', {
-            'trigger_threshold': 0
-        })
-
-    def test_livetime_set_frequency(self):
-        self.client.get_received() # clear received buffer
-        data = {
-            'node': 0,
-            'frequency': 5800
-        }
-        # trigger livetime client mode
-        self.client.emit('get_version')
-        self.client.emit('set_frequency', data)
-
-        responses = self.client.get_received()
-        for resp in responses:
-            if resp['name'] == 'frequency_set':
-                if resp['args'][0]['node'] == 0:
-                    self.assertEqual(resp['args'][0], data)
-                    return
-
-        self.fail('No valid responses')
-
-    def test_livetime_reset_auto_calibration(self):
-        self.client.emit('reset_auto_calibration', {
-            'node': -1
-        })
-
-    def test_livetime_heartbeat(self):
-        # trigger livetime client mode
-        self.client.emit('get_version')
-        gevent.sleep(0.5)
-        resp = self.get_response('heartbeat')
-        self.assertIn('current_rssi', resp)
-        self.assertTrue(len(resp['current_rssi']) > 0)
-
-    def test_livetime_pass_record(self):
-        # trigger livetime client mode
-        self.client.emit('get_version')
-        server.RaceContext.race.race_status = 1
-        node = Node()
-        node.index = 0
-        server.RaceContext.race.start_time_monotonic = 10
-        server.RaceContext.race.start_time_epoch_ms = server.monotonic_to_epoch_millis(server.RaceContext.race.start_time_monotonic)
-        server.pass_record_callback(node, 19.8+server.RaceContext.race.start_time_monotonic, 0)
-        gevent.sleep(0.1)
-        resp = self.get_response('pass_record')
-        self.assertIn('node', resp)
-        self.assertIn('frequency', resp)
-        self.assertIn('timestamp', resp)
-        self.assertEqual(resp['timestamp'], server.monotonic_to_epoch_millis(server.RaceContext.race.start_time_monotonic) + 19800)
-
 # trackside compatibility
 
     def test_trackside_get_pi_time(self):
@@ -358,7 +277,7 @@ class ServerTest(unittest.TestCase):
 
     def test_api_root(self):
         self.assertEqual(server.RHAPI.API_VERSION_MAJOR, 1)
-        self.assertEqual(server.RHAPI.API_VERSION_MINOR, 0)
+        self.assertEqual(server.RHAPI.API_VERSION_MINOR, 1)
         self.assertEqual(server.RHAPI.__, server.RHAPI.language.__)
 
     def test_ui_api(self):
@@ -417,6 +336,34 @@ class ServerTest(unittest.TestCase):
 
         server.RHAPI.fields.register_pilot_attribute(UIField('test_attribute', 'Test Attribute', UIFieldType.TEXT))
         attr = server.RHAPI.fields.pilot_attributes[0]
+        attr_match = (attr.name == 'test_attribute'  and \
+                      attr.label == "Test Attribute" and \
+                      attr.field_type == UIFieldType.TEXT)
+        self.assertEqual(attr_match, True)
+
+        server.RHAPI.fields.register_heat_attribute(UIField('test_attribute', 'Test Attribute', UIFieldType.TEXT))
+        attr = server.RHAPI.fields.heat_attributes[0]
+        attr_match = (attr.name == 'test_attribute'  and \
+                      attr.label == "Test Attribute" and \
+                      attr.field_type == UIFieldType.TEXT)
+        self.assertEqual(attr_match, True)
+
+        server.RHAPI.fields.register_raceclass_attribute(UIField('test_attribute', 'Test Attribute', UIFieldType.TEXT))
+        attr = server.RHAPI.fields.raceclass_attributes[0]
+        attr_match = (attr.name == 'test_attribute'  and \
+                      attr.label == "Test Attribute" and \
+                      attr.field_type == UIFieldType.TEXT)
+        self.assertEqual(attr_match, True)
+
+        server.RHAPI.fields.register_race_attribute(UIField('test_attribute', 'Test Attribute', UIFieldType.TEXT))
+        attr = server.RHAPI.fields.race_attributes[0]
+        attr_match = (attr.name == 'test_attribute'  and \
+                      attr.label == "Test Attribute" and \
+                      attr.field_type == UIFieldType.TEXT)
+        self.assertEqual(attr_match, True)
+
+        server.RHAPI.fields.register_raceformat_attribute(UIField('test_attribute', 'Test Attribute', UIFieldType.TEXT))
+        attr = server.RHAPI.fields.race_attributes[0]
         attr_match = (attr.name == 'test_attribute'  and \
                       attr.label == "Test Attribute" and \
                       attr.field_type == UIFieldType.TEXT)
@@ -542,7 +489,58 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(server.RHAPI.race.heat, 0)
         server.RHAPI.race.heat = 1
         self.assertEqual(server.RHAPI.race.heat, 1)
-        
+
+    def test_attributes(self):
+        # Ensure there is a stored pilot, heat, class, and race
+        server.RHAPI.db.pilot_add()
+        server.RHAPI.db.heat_add()
+        server.RHAPI.db.raceclass_add()
+        server.RHAPI.race.stage()
+        server.RHAPI.race.stop()
+        server.RHAPI.race.save()
+
+        pilot = server.RHAPI.db.pilots[0]
+        heat = server.RHAPI.db.heats[0]
+        raceclass = server.RHAPI.db.raceclasses[0]
+        race = server.RHAPI.db.races[0]
+        format = server.RHAPI.db.raceformats[0]
+
+        server.RHAPI.db.pilot_alter(pilot.id, attributes={'test_attribute': 'test-pilot-attr'})
+        server.RHAPI.db.heat_alter(heat.id, attributes={'test_attribute': 'test-heat-attr'})
+        server.RHAPI.db.raceclass_alter(raceclass.id, attributes={'test_attribute': 'test-raceclass-attr'})
+        server.RHAPI.db.race_alter(race.id, attributes={'test_attribute': 'test-race-attr'})
+        server.RHAPI.db.raceformat_alter(format.id, attributes={'test_attribute': 'test-format-attr'})
+
+        attributes_by_obj = server.RHAPI.db.pilot_attributes(pilot)
+        #attributes_by_id = server.RHAPI.db.pilot_attributes(pilot.id)
+        #self.assertEqual(attributes_by_obj, attributes_by_id)
+        attr_by_obj = server.RHAPI.db.pilot_attribute_value(pilot, 'test_attribute')
+        self.assertEqual(attr_by_obj, 'test-pilot-attr')
+
+        attributes_by_obj = server.RHAPI.db.heat_attributes(heat)
+        #attributes_by_id = server.RHAPI.db.heat_attributes(heat.id)
+        #self.assertEqual(attributes_by_obj, attributes_by_id)
+        attr_by_obj = server.RHAPI.db.heat_attribute_value(heat, 'test_attribute')
+        self.assertEqual(attr_by_obj, 'test-heat-attr')
+
+        attributes_by_obj = server.RHAPI.db.raceclass_attributes(raceclass)
+        #attributes_by_id = server.RHAPI.db.raceclass_attributes(raceclass.id)
+        #self.assertEqual(attributes_by_obj, attributes_by_id)
+        attr_by_obj = server.RHAPI.db.raceclass_attribute_value(raceclass, 'test_attribute')
+        self.assertEqual(attr_by_obj, 'test-raceclass-attr')
+
+        attributes_by_obj = server.RHAPI.db.race_attributes(race)
+        #attributes_by_id = server.RHAPI.db.race_attributes(race.id)
+        #self.assertEqual(attributes_by_obj, attributes_by_id)
+        attr_by_obj = server.RHAPI.db.race_attribute_value(race, 'test_attribute')
+        self.assertEqual(attr_by_obj, 'test-race-attr')
+
+        attributes_by_obj = server.RHAPI.db.raceformat_attributes(format)
+        #attributes_by_id = server.RHAPI.db.raceformat_attributes(format.id)
+        #self.assertEqual(attributes_by_obj, attributes_by_id)
+        attr_by_obj = server.RHAPI.db.raceformat_attribute_value(format, 'test_attribute')
+        self.assertEqual(attr_by_obj, 'test-format-attr')
+
     def test_rhapi_frequencyset(self):
         original_set = server.RHAPI.race.frequencyset
         num_sets = len(server.RHAPI.db.frequencysets)

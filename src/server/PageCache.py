@@ -9,15 +9,15 @@ if new data becomes available during the build process.
 '''
 
 import logging
-from monotonic import monotonic
+from time import monotonic
 from eventmanager import Evt
 import RHUtils
 import gevent
 
 logger = logging.getLogger(__name__)
 
-from flask_sqlalchemy import SQLAlchemy
-DB = SQLAlchemy()
+import FlaskAppObj
+FlaskAppObj.APP.app_context().push()
 
 class PageCache:
     _CACHE_TIMEOUT = 10

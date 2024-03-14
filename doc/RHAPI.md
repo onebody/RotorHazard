@@ -238,6 +238,8 @@ Pilot Attributes are represented with the `PilotAttribute` class, which has the 
 - `name` (string): Name of attribute
 - `value` (string): Value of attribute
 
+Alter pilot attributes with `db.pilot_alter`.
+
 #### fields.pilot_attributes
 _Read only_
 Provides a list of registered `PilotAttribute`s.
@@ -247,6 +249,89 @@ Register an attribute to be displayed in the UI or otherwise made accessible to 
 
 - `field` (UIField): See [UI Fields](Plugins.md#ui-fields)
 
+
+### Heat Attributes
+
+Heat Attributes are simple storage variables which persist to the database. Heat Attribute values are unique to/stored individually for each heat.
+
+Heat Attributes are represented with the `HeatAttribute` class, which has the following properties:
+- `id` (int): ID of heat to which this attribute is assigned
+- `name` (string): Name of attribute
+- `value` (string): Value of attribute
+
+Alter heat attributes with `db.heat_alter`.
+
+#### fields.heat_attributes
+_Read only_
+Provides a list of registered `HeatAttribute`s.
+
+#### fields.register_heat_attribute(field)
+Register an attribute to be made accessible to plugins.
+
+- `field` (UIField): See [UI Fields](Plugins.md#ui-fields)
+
+
+### Race Class Attributes
+
+Race Class Attributes are simple storage variables which persist to the database. Race Class Attribute values are unique to/stored individually for each race class.
+
+Heat Attributes are represented with the `RaceClassAttribute` class, which has the following properties:
+- `id` (int): ID of race class to which this attribute is assigned
+- `name` (string): Name of attribute
+- `value` (string): Value of attribute
+
+Alter race class attributes with `db.raceclass_alter`.
+
+#### fields.raceclass_attributes
+_Read only_
+Provides a list of registered `RaceClassAttribute`s.
+
+#### fields.register_raceclass_attribute(field)
+Register an attribute to be made accessible to plugins.
+
+- `field` (UIField): See [UI Fields](Plugins.md#ui-fields)
+
+
+### Race Attributes
+
+Race Attributes are simple storage variables which persist to the database. Race Attribute values are unique to/stored individually for each race.
+
+Race Attributes are represented with the `SavedRaceMetaAttribute` class, which has the following properties:
+- `id` (int): ID of race to which this attribute is assigned
+- `name` (string): Name of attribute
+- `value` (string): Value of attribute
+
+Alter race attributes with `db.race_alter`.
+
+#### fields.race_attributes
+_Read only_
+Provides a list of registered `SavedRaceMetaAttribute`s.
+
+#### fields.register_race_attribute(field)
+Register an attribute to be made accessible to plugins.
+
+- `field` (UIField): See [UI Fields](Plugins.md#ui-fields)
+
+
+### Race Format Attributes
+
+Race Format Attributes are simple storage variables which persist to the database. Race Format Attribute values are unique to/stored individually for each race format.
+
+Race Format Attributes are represented with the `RaceFormatAttribute` class, which has the following properties:
+- `id` (int): ID of race format to which this attribute is assigned
+- `name` (string): Name of attribute
+- `value` (string): Value of attribute
+
+Alter race attributes with `db.raceformat_alter`.
+
+#### fields.raceformat_attributes
+_Read only_
+Provides a list of registered `SavedRaceMetaAttribute`s.
+
+#### fields.register_raceformat_attribute(field)
+Register an attribute to be made accessible to plugins.
+
+- `field` (UIField): See [UI Fields](Plugins.md#ui-fields)
 
 
 ## Database Access
@@ -293,10 +378,10 @@ All custom attributes assigned to pilot. Returns `list[PilotAttribute]`.
 - `pilot_or_id` (pilot|int): Either the pilot object or the ID of pilot
 
 #### db.pilot_attribute_value(pilot_or_id, name, default_value=None)
-The value of a single custom attribute assigned to pilot. Returns `string`.
+The value of a single custom attribute assigned to pilot. Returns `string` regardless of registered field type, or default value.
 - `pilot_or_id` (pilot|int): Either the pilot object or the ID of pilot
 - `name` (string): attribute to retrieve
-- `default_value` _(optional)_: value to return if attribute does not exist
+- `default_value` _(optional)_: value to return if attribute is not registered (uses registered default if available)
 
 #### db.pilot_ids_by_attribute(name, value)
 ID of pilots with attribute matching the specified attribute/value combination. Returns `list[int]`.
@@ -319,7 +404,7 @@ Alter pilot data. Returns the altered `Pilot`
 - `phonetic` _(optional)_ (string): New phonetic spelling of callsign for pilot
 - `team` _(optional)_ (string): New team for pilot
 - `color` _(optional)_ (string): New color for pilot
-- `attributes` _(optional)_ (list[dict]): Attributes to alter, attribute values assigned to respective keys
+- `attributes` _(optional)_ (dict): Attributes to alter, attribute values assigned to respective keys
 
 #### db.pilot_delete(pilot_or_id)
 Delete pilot record. Fails if pilot is associated with saved race. Returns `boolean` success status.
@@ -367,6 +452,21 @@ The calculated summary result set for all races associated with this heat. Retur
 The highest-numbered race round recorded for selected heat. Returns `int`.
 - `heat_id` (int): ID of heat
 
+#### db.heat_attributes(heat_or_id)
+All custom attributes assigned to heat. Returns `list[HeatAttribute]`.
+- `heat_or_id` (heat|int): Either the heat object or the ID of heat
+
+#### db.heat_attribute_value(heat_or_id, name, default_value=None)
+The value of a single custom attribute assigned to heat. Returns `string` regardless of registered field type, or default value.
+- `heat_or_id` (heat|int): Either the heat object or the ID of heat
+- `name` (string): attribute to retrieve
+- `default_value` _(optional)_: value to return if attribute is not registered (uses registered default if available)
+
+#### db.heat_ids_by_attribute(name, value)
+ID of heats with attribute matching the specified attribute/value combination. Returns `list[int]`.
+- `name` (string): attribute to match
+- `value` (string): value to match
+
 #### db.heat_add(name=None, raceclass=None, auto_frequency=None)
 Add a new heat to the database. Returns the new `Heat`.
 - `name` _(optional)_ (string): Name for new heat
@@ -378,13 +478,14 @@ Duplicate a heat record. Returns the new `Heat`.
 - `source_heat_or_id` (int|heat): Either the heat object or the ID of heat to copy from
 - `dest_class` _(optional)_ (int): Raceclass ID to copy heat into
 
-#### db.heat_alter(heat_id, name=None, raceclass=None, auto_frequency=None, status=None)
+#### db.heat_alter(heat_id, name=None, raceclass=None, auto_frequency=None, status=None, attributes=None)
 Alter heat data. Returns tuple of this `Heat` and affected races as `list[SavedRace]`.
 - `heat_id` (int): ID of heat to alter
 - `name` _(optional)_ (string): New name for heat
 - `raceclass` _(optional)_ (int): New raceclass ID for heat
 - `auto_frequency` _(optional)_ (boolean): New auto-frequency setting for heat
 - `status` _(optional)_ (HeatStatus): New status for heat
+- `attributes` _(optional)_ (dict): Attributes to alter, attribute values assigned to respective keys
 
 #### db.heat_delete(heat_or_id)
 Delete heat. Fails if heat has saved races associated or if there is only one heat left in the database. Returns `boolean` success status.
@@ -468,7 +569,7 @@ Race classes are represented with the `RaceClass` class, which has the following
 
 The sentinel value `RHUtils.CLASS_ID_NONE` should be used when no race class is defined.
 
-NOTE: Results should be accessed with the `db.raceclass_results` method and not by reading the `results` property directly. The `results` property is unreliable because results calulation is delayed to improve system performance. `db.raceclass_results` ensures the calculation is current, will return quickly from cache if possible, or will build it if necessary.
+NOTE: Results should be accessed with the `db.raceclass_results` method and not by reading the `results` property directly. The `results` property is unreliable because results calculation is delayed to improve system performance. `db.raceclass_results` ensures the calculation is current, will return quickly from cache if possible, or will build it if necessary.
 
 `Database.HeatAdvanceType` defines how the UI will automatically advance heats after a race is finished.
 - `HeatAdvanceType.NONE`: Do nothing
@@ -483,6 +584,21 @@ All race class records. Returns `list[RaceClass]`.
 A single race class record. Returns `RaceClass`.
 - `raceclass_id` (int): ID of race class record to retrieve
 
+#### db.raceclass_attributes(raceclass_or_id)
+All custom attributes assigned to race class. Returns `list[RaceClassAttribute]`.
+- `raceclass_or_id` (raceclass|int): Either the race class object or the ID of race class
+
+#### db.raceclass_attribute_value(raceclass_or_id, name, default_value=None)
+The value of a single custom attribute assigned to race class. Returns `string` regardless of registered field type, or default value.
+- `raceclass_or_id` (raceclass|int): Either the race class object or the ID of race class
+- `name` (string): attribute to retrieve
+- `default_value` _(optional)_: value to return if attribute is not registered (uses registered default if available)
+
+#### db.raceclass_ids_by_attribute(name, value)
+ID of race classes with attribute matching the specified attribute/value combination. Returns `list[int]`.
+- `name` (string): attribute to match
+- `value` (string): value to match
+
 #### db.raceclass_add(name=None, description=None, raceformat=None, win_condition=None, rounds=None, heat_advance_type=None)
 Add a new race class to the database. Returns the new `RaceClass`.
 - `name` _(optional)_ (string): Name for new race class
@@ -496,7 +612,7 @@ Add a new race class to the database. Returns the new `RaceClass`.
 Duplicate a race class. Returns the new `RaceClass`.
 - `source_class_or_id` (int|RaceClass): Either a race class object or the ID of a race class
 
-#### db.raceclass_alter(raceclass_id, name=None, description=None, raceformat=None, win_condition=None, rounds=None, heat_advance_type=None, rank_settings=None)
+#### db.raceclass_alter(raceclass_id, name=None, description=None, raceformat=None, win_condition=None, rounds=None, heat_advance_type=None, rank_settings=None, attributes=None)
 Alter race class data. Returns tuple of this `RaceClass` and affected races as `list[SavedRace]`.
 - `raceclass_id` (int): ID of race class to alter
 - `name` _(optional)_ (string): Name for new race class
@@ -506,6 +622,7 @@ Alter race class data. Returns tuple of this `RaceClass` and affected races as `
 - `rounds` _(optional)_ (int): Number of rounds to assign to race class
 - `heat_advance_type` _(optional)_ (HeatAdvanceType): Advancement method to assign to race class
 - `rank_settings` _(optional)_ (dict): arguments to pass to class ranking
+- `attributes` _(optional)_ (dict): Attributes to alter, attribute values assigned to respective keys
 
 #### db.raceclass_results(raceclass_or_id)
 The calculated summary result set for all races associated with this race class. Returns `dict`.
@@ -576,6 +693,21 @@ All race formats. Returns `list[RaceFormat]`
 A single race format record. Returns `RaceFormat`.
 - `format_id` (int): ID of race format record to retrieve
 
+#### db.raceformat_attributes(raceformat_or_id)
+All custom attributes assigned to race format. Returns `list[RaceFormatAttribute]`.
+- `raceformat_or_id` (raceformat|int): Either the race format object or the ID of race format
+
+#### db.raceformat_attribute_value(raceformat_or_id, name, default_value=None)
+The value of a single custom attribute assigned to race format. Returns `string` regardless of registered field type, or default value.
+- `raceformat_or_id` (raceformat|int): Either the race format object or the ID of race format
+- `name` (string): attribute to retrieve
+- `default_value` _(optional)_: value to return if attribute is not registered (uses registered default if available)
+
+#### db.raceformat_ids_by_attribute(name, value)
+ID of race formats with attribute matching the specified attribute/value combination. Returns `list[int]`.
+- `name` (string): attribute to match
+- `value` (string): value to match
+
 #### db.raceformat_add(name=None, unlimited_time=None, race_time_sec=None, lap_grace_sec=None, staging_fixed_tones=None, staging_delay_tones=None, start_delay_min_ms=None, start_delay_max_ms=None, start_behavior=None, win_condition=None, number_laps_win=None, team_racing_mode=None, points_method=None)
 Add a new race format to the database. Returns the new `RaceFormat`.
 - `name` _(optional)_ (string): Name for new race format
@@ -596,7 +728,7 @@ Add a new race format to the database. Returns the new `RaceFormat`.
 Duplicate a race format. Returns the new `RaceFormat`.
 - `source_format_or_id` (int|RaceFormat): Either a race format object or the ID of a race format
 
-#### db.raceformat_alter(raceformat_id, name=None, unlimited_time=None, race_time_sec=None, lap_grace_sec=None, staging_fixed_tones=None, staging_delay_tones=None, start_delay_min_ms=None, start_delay_max_ms=None, start_behavior=None, win_condition=None, number_laps_win=None, team_racing_mode=None, points_method=None, points_settings=None)
+#### db.raceformat_alter(raceformat_id, name=None, unlimited_time=None, race_time_sec=None, lap_grace_sec=None, staging_fixed_tones=None, staging_delay_tones=None, start_delay_min_ms=None, start_delay_max_ms=None, start_behavior=None, win_condition=None, number_laps_win=None, team_racing_mode=None, points_method=None, points_settings=None, attributes=None)
 Alter race format data. Returns tuple of this `RaceFormat` and affected races as `list[SavedRace]`.
 - `raceformat_id` (int): ID of race format to alter
 - `name` _(optional)_ (string): Name for new race format
@@ -613,6 +745,7 @@ Alter race format data. Returns tuple of this `RaceFormat` and affected races as
 - `team_racing_mode` _(optional)_ (boolean): Team racing setting for new race format
 - `points_method` _(optional)_ (string): JSON-serialized arguments for new race format
 - `points_settings`  _(optional)_ (dict): arguments to pass to class ranking
+- `attributes` _(optional)_ (dict): Attributes to alter, attribute values assigned to respective keys
 
 #### db.raceformat_delete(raceformat_id)
 Delete race format. Fails if race class has saved races associated, is assigned to the active race, or is the last format in database. Returns `boolean` success status.
@@ -724,6 +857,26 @@ Saved race records matching the provided heat ID. Returns `list[RaceClass]`.
 Saved race records matching the provided race class ID. Returns `list[RaceClass]`.
 - `raceclass_id` (int): ID of race class used to retrieve saved race
 
+#### db.race_attributes(race_or_id)
+All custom attributes assigned to race. Returns `list[SavedRaceMetaAttribute]`.
+- `race_or_id` (race|int): Either the race object or the ID of race
+
+#### db.race_attribute_value(race_or_id, name, default_value=None)
+The value of a single custom attribute assigned to race. Returns `string` regardless of registered field type, or default value.
+- `race_or_id` (race|int): Either the race object or the ID of race
+- `name` (string): attribute to retrieve
+- `default_value` _(optional)_: value to return if attribute is not registered (uses registered default if available)
+
+#### db.race_ids_by_attribute(name, value)
+ID of races with attribute matching the specified attribute/value combination. Returns `list[int]`.
+- `name` (string): attribute to match
+- `value` (string): value to match
+
+#### db.race_alter(race_id, attributes=None)
+Alter race data. Supports only custom attributes. No return value.
+- `race_id` (int): ID of race to alter
+- `attributes` _(optional)_ (list[dict]): Attributes to alter, attribute values assigned to respective keys
+
 #### db.race_results(race_or_id)
 Calculated result set for saved race. Returns `dict`.
 - `race_or_id` (int|SavedRaceMeta): Either the saved race object or the ID of saved race
@@ -781,6 +934,7 @@ Laps are represented with the `SavedRaceLap` class, which has the following prop
 - `LapSource.MANUAL`: Lap added manually by user in UI
 - `LapSource.RECALC`: Lap added after recalculation (marshaling) or RSSI data
 - `LapSource.AUTOMATIC`: Lap added by other automatic process
+- `LapSource.API`: Lap added by API (plugin)
 
 #### db.laps
 _Read only_

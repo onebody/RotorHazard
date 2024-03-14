@@ -1,12 +1,16 @@
 ''' Class to access race functions and details '''
+from Database import LapSource
 
 API_VERSION_MAJOR = 1
-API_VERSION_MINOR = 0
+API_VERSION_MINOR = 1
 
 import json
 import inspect
 from RHUI import UIField, UIFieldType
 from eventmanager import Evt
+
+from FlaskAppObj import APP
+APP.app_context().push()
 
 class RHAPI():
     def __init__(self, race_context):
@@ -68,6 +72,9 @@ class UserInterfaceAPI():
     def message_alert(self, message):
         self._racecontext.rhui.emit_priority_message(message, True)
 
+    def clear_messages(self):
+        self._racecontext.rhui.emit_clear_priority_messages()
+
     # Socket
     def socket_listen(self, message, handler):
         self._racecontext.rhui.socket_listen(message, handler)
@@ -122,6 +129,38 @@ class FieldsAPI():
     def register_pilot_attribute(self, field:UIField):
         return self._racecontext.rhui.register_pilot_attribute(field)
 
+    # Heat Attribute
+    @property
+    def heat_attributes(self):
+        return self._racecontext.rhui.heat_attributes
+
+    def register_heat_attribute(self, field:UIField):
+        return self._racecontext.rhui.register_heat_attribute(field)
+
+    # Race Class Attribute
+    @property
+    def raceclass_attributes(self):
+        return self._racecontext.rhui.raceclass_attributes
+
+    def register_raceclass_attribute(self, field:UIField):
+        return self._racecontext.rhui.register_raceclass_attribute(field)
+
+    # Race Attribute
+    @property
+    def race_attributes(self):
+        return self._racecontext.rhui.savedrace_attributes
+
+    def register_race_attribute(self, field:UIField):
+        return self._racecontext.rhui.register_savedrace_attribute(field)
+
+    # Race Attribute
+    @property
+    def raceformat_attributes(self):
+        return self._racecontext.rhui.raceformat_attributes
+
+    def register_raceformat_attribute(self, field:UIField):
+        return self._racecontext.rhui.register_raceformat_attribute(field)
+
     # General Setting
     @property
     def options(self):
@@ -155,12 +194,12 @@ class DatabaseAPI():
     def pilot_attributes(self, pilot_or_id):
         return self._racecontext.rhdata.get_pilot_attributes(pilot_or_id)
 
-    def pilot_attribute_value(self, pilot_or_id, name):
+    def pilot_attribute_value(self, pilot_or_id, name, default_value=None):
         for field in self._racecontext.rhui.pilot_attributes:
             if field.name == name:
                 return self._racecontext.rhdata.get_pilot_attribute_value(pilot_or_id, field.name, field.value)
         else:
-            return self._racecontext.rhdata.get_pilot_attribute_value(pilot_or_id, name)
+            return self._racecontext.rhdata.get_pilot_attribute_value(pilot_or_id, name, default_value)
 
     def pilot_ids_by_attribute(self, name, value):
         return self._racecontext.rhdata.get_pilot_id_by_attribute(name, value)
@@ -222,6 +261,19 @@ class DatabaseAPI():
     def heat_by_id(self, heat_id):
         return self._racecontext.rhdata.get_heat(heat_id)
 
+    def heat_attributes(self, heat_or_id):
+        return self._racecontext.rhdata.get_heat_attributes(heat_or_id)
+
+    def heat_attribute_value(self, heat_or_id, name, default_value=None):
+        for field in self._racecontext.rhui.heat_attributes:
+            if field.name == name:
+                return self._racecontext.rhdata.get_heat_attribute_value(heat_or_id, field.name, field.value)
+        else:
+            return self._racecontext.rhdata.get_heat_attribute_value(heat_or_id, name, default_value)
+
+    def heat_ids_by_attribute(self, name, value):
+        return self._racecontext.rhdata.get_heat_id_by_attribute(name, value)
+
     def heats_by_class(self, raceclass_id):
         return self._racecontext.rhdata.get_heats_by_class(raceclass_id)
 
@@ -250,8 +302,17 @@ class DatabaseAPI():
         else:
             return self._racecontext.rhdata.duplicate_heat(source_heat_or_id)
 
-    def heat_alter(self, heat_id, name=None, raceclass=None, auto_frequency=None, status=None):
+    def heat_alter(self, heat_id, name=None, raceclass=None, auto_frequency=None, status=None, attributes=None):
         data = {}
+
+        if isinstance(attributes, dict):
+            data['heat'] = heat_id
+            for key, value in attributes.items():
+                data['heat_attr'] = key
+                data['value'] = value
+                self._racecontext.rhdata.alter_heat(data)
+
+            data = {}
 
         for name, value in [
             ('name', name),
@@ -316,6 +377,19 @@ class DatabaseAPI():
     def raceclass_by_id(self, raceclass_id):
         return self._racecontext.rhdata.get_raceClass(raceclass_id)
 
+    def raceclass_attributes(self, raceclass_or_id):
+        return self._racecontext.rhdata.get_raceclass_attributes(raceclass_or_id)
+
+    def raceclass_attribute_value(self, raceclass_or_id, name, default_value=None):
+        for field in self._racecontext.rhui.raceclass_attributes:
+            if field.name == name:
+                return self._racecontext.rhdata.get_raceclass_attribute_value(raceclass_or_id, field.name, field.value)
+        else:
+            return self._racecontext.rhdata.get_raceclass_attribute_value(raceclass_or_id, name, default_value)
+
+    def raceclass_ids_by_attribute(self, name, value):
+        return self._racecontext.rhdata.get_raceclass_id_by_attribute(name, value)
+
     def raceclass_add(self, name=None, description=None, raceformat=None, win_condition=None, rounds=None, heat_advance_type=None):
         #TODO add rank settings
         data = {}
@@ -337,8 +411,17 @@ class DatabaseAPI():
     def raceclass_duplicate(self, source_class_or_id):
         return self._racecontext.rhdata.duplicate_raceClass(source_class_or_id)
 
-    def raceclass_alter(self, raceclass_id, name=None, description=None, raceformat=None, win_condition=None, rounds=None, heat_advance_type=None, rank_settings=None):
+    def raceclass_alter(self, raceclass_id, name=None, description=None, raceformat=None, win_condition=None, rounds=None, heat_advance_type=None, rank_settings=None, attributes=None):
         data = {}
+
+        if isinstance(attributes, dict):
+            data['class_id'] = raceclass_id
+            for key, value in attributes.items():
+                data['class_attr'] = key
+                data['value'] = value
+                self._racecontext.rhdata.alter_raceClass(data)
+
+            data = {}
 
         for name, value in [
             ('class_name', name),
@@ -400,11 +483,33 @@ class DatabaseAPI():
 
         return self._racecontext.rhdata.add_format(data)
 
+    def raceformat_attributes(self, raceformat_or_id):
+        return self._racecontext.rhdata.get_raceformat_attributes(raceformat_or_id)
+
+    def raceformat_attribute_value(self, raceformat_or_id, name, default_value=None):
+        for field in self._racecontext.rhui.raceformat_attributes:
+            if field.name == name:
+                return self._racecontext.rhdata.get_raceformat_attribute_value(raceformat_or_id, field.name, field.value)
+        else:
+            return self._racecontext.rhdata.get_raceformat_attribute_value(raceformat_or_id, name, default_value)
+
+    def raceformat_ids_by_attribute(self, name, value):
+        return self._racecontext.rhdata.get_raceformat_id_by_attribute(name, value)
+
     def raceformat_duplicate(self, source_format_or_id):
         return self._racecontext.rhdata.duplicate_raceFormat(source_format_or_id)
 
-    def raceformat_alter(self, raceformat_id, name=None, unlimited_time=None, race_time_sec=None, lap_grace_sec=None, staging_fixed_tones=None, staging_delay_tones=None, start_delay_min_ms=None, start_delay_max_ms=None, start_behavior=None, win_condition=None, number_laps_win=None, team_racing_mode=None, points_method=None, points_settings=None):
+    def raceformat_alter(self, raceformat_id, name=None, unlimited_time=None, race_time_sec=None, lap_grace_sec=None, staging_fixed_tones=None, staging_delay_tones=None, start_delay_min_ms=None, start_delay_max_ms=None, start_behavior=None, win_condition=None, number_laps_win=None, team_racing_mode=None, points_method=None, points_settings=None, attributes=None):
         data = {}
+
+        if isinstance(attributes, dict):
+            data['format_id'] = raceformat_id
+            for key, value in attributes.items():
+                data['format_attr'] = key
+                data['value'] = value
+                self._racecontext.rhdata.alter_raceFormat(data)
+
+            data = {}
 
         for name, value in [
             ('format_name', name),
@@ -510,6 +615,19 @@ class DatabaseAPI():
     def race_by_id(self, race_id):
         return self._racecontext.rhdata.get_savedRaceMeta(race_id)
 
+    def race_attributes(self, race_or_id):
+        return self._racecontext.rhdata.get_savedrace_attributes(race_or_id)
+
+    def race_attribute_value(self, race_or_id, name, default_value=None):
+        for field in self._racecontext.rhui.savedrace_attributes:
+            if field.name == name:
+                return self._racecontext.rhdata.get_savedrace_attribute_value(race_or_id, field.name, field.value)
+        else:
+            return self._racecontext.rhdata.get_savedrace_attribute_value(race_or_id, name, default_value)
+
+    def race_ids_by_attribute(self, name, value):
+        return self._racecontext.rhdata.get_savedrace_id_by_attribute(name, value)
+
     def race_by_heat_round(self, heat_id, round_number):
         return self._racecontext.rhdata.get_savedRaceMeta_by_heat_round(heat_id, round_number)
 
@@ -518,6 +636,16 @@ class DatabaseAPI():
 
     def races_by_raceclass(self, raceclass_id):
         return self._racecontext.rhdata.get_savedRaceMetas_by_raceClass(raceclass_id)
+
+    def race_alter(self, race_id, attributes=None):
+        data = {}
+
+        if isinstance(attributes, dict):
+            data['race_id'] = race_id
+            for key, value in attributes.items():
+                data['race_attr'] = key
+                data['value'] = value
+                self._racecontext.rhdata.alter_savedRaceMeta(race_id, data)
 
     def race_results(self, race_or_id):
         return self._racecontext.rhdata.get_results_savedRaceMeta(race_or_id)
@@ -746,10 +874,7 @@ class RaceAPI():
 
     @heat.setter
     def heat(self, heat_id):
-        self._heat_set({'heat': heat_id})
-
-    def _heat_set(self, data):
-        pass # replaced externally. TODO: Refactor management functions
+        return self._racecontext.race.set_heat(heat_id)
 
     @property
     def frequencyset(self):
@@ -813,6 +938,10 @@ class RaceAPI():
     def laps_active_raw(self, filter_late_laps=False):
         return self._racecontext.race.get_active_laps(filter_late_laps)
 
+    def lap_add(self, seat_index, timestamp):
+        seat = self._racecontext.interface.nodes[seat_index]
+        return self._racecontext.race.add_lap(seat, timestamp, LapSource.API)
+
     @property
     def results(self):
         return self._racecontext.race.get_results()
@@ -859,17 +988,17 @@ class RaceAPI():
         else:
             return None
 
-    def stage(self):
-        pass # replaced externally until refactored; TODO: refactor
+    def stage(self, args=None):
+        return self._racecontext.race.stage(args)
 
     def stop(self, doSave=False):
-        pass # replaced externally until refactored; TODO: refactor
+        return self._racecontext.race.stop(doSave)
 
     def save(self):
-        pass # replaced externally until refactored; TODO: refactor
+        return self._racecontext.race.save()
 
     def clear(self):
-        pass # replaced externally until refactored; TODO: refactor
+        return self._racecontext.race.discard_laps()
 
 
 #

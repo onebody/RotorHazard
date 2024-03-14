@@ -3,11 +3,16 @@
 
 # Development resources
 /.settings
+/.project
+/.pydevproject
+/RotorHazard.iml
+/.idea
 /src/libraries
 
 # RH Database and backups
 *.db
-db_bkp
+/src/server/db_bkp/*
+!/src/server/db_bkp/README.md
 
 # Local system configuration
 /src/server/config.json

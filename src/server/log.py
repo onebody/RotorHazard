@@ -3,6 +3,7 @@ import os
 import glob
 import logging
 import platform
+import subprocess
 import time
 import zipfile
 import gevent
@@ -170,7 +171,7 @@ def later_stage_setup(config, socket):
     logging_config[SYSLOG_LEVEL_STR] = LEVEL_NONE_STR
     logging_config[FILELOG_LEVEL_STR] = logging.getLevelName(logging.INFO)
     logging_config[FILELOG_NUM_KEEP_STR] = DEF_FILELOG_NUM_KEEP
-    logging_config[CONSOLE_STREAM_STR] = DEF_CONSOLE_STREAM.name[1:-1]
+    logging_config[CONSOLE_STREAM_STR] = str(DEF_CONSOLE_STREAM.name)[1:-1]
 
     logging_config.update(config)
 
@@ -185,7 +186,7 @@ def later_stage_setup(config, socket):
     err_str = None
     (lvl, err_str) = get_logging_level_for_item(logging_config, CONSOLE_LEVEL_STR, err_str)
     if lvl > 0 and lvl < LEVEL_NONE_VALUE:
-        stm_obj = sys.stdout if sys.stderr.name.find(logging_config[CONSOLE_STREAM_STR]) != 1 else sys.stderr
+        stm_obj = sys.stdout if str(sys.stderr.name).find(logging_config[CONSOLE_STREAM_STR]) != 1 else sys.stderr
         hdlr_obj = logging.StreamHandler(stream=stm_obj)
         hdlr_obj.setLevel(lvl)
         hdlr_obj.setFormatter(logging.Formatter(CONSOLE_FORMAT_STR))
@@ -318,7 +319,8 @@ def delete_old_log_files(num_keep_val, lfname, lfext, err_str):
     return num_del, err_str
 
 
-def create_log_files_zip(logger, config_file, db_file):
+def create_log_files_zip(logger, config_file, db_file, boot_config_file="/boot/firmware/config.txt", \
+                         alt_boot_config_file="/boot/config.txt"):
     zip_file_obj = None
     try:
         if os.path.exists(LOG_DIR_NAME):
@@ -333,11 +335,34 @@ def create_log_files_zip(logger, config_file, db_file):
                 if root == LOG_DIR_NAME:  # don't include sub-directories
                     for fname in files:
                         zip_file_obj.write(os.path.join(root, fname))
-            # also include configuration and database files
-            if config_file and os.path.isfile(config_file):
-                zip_file_obj.write(config_file)
-            if db_file and os.path.isfile(db_file):
-                zip_file_obj.write(db_file)
+            try:
+                # also include configuration, database, and OS boot-config files
+                if config_file and os.path.isfile(config_file):
+                    zip_file_obj.write(config_file)
+                if db_file and os.path.isfile(db_file):
+                    zip_file_obj.write(db_file)
+                if boot_config_file and os.path.isfile(boot_config_file):
+                    zip_file_obj.write(boot_config_file, boot_config_file[1:].replace('/','_'))
+                elif alt_boot_config_file and os.path.isfile(alt_boot_config_file):
+                    zip_file_obj.write(alt_boot_config_file, alt_boot_config_file[1:].replace('/','_'))
+            except Exception:
+                logger.exception("Error adding files to log-files .zip file")
+            try:
+                # also include current list of Python libraries
+                whichPipStr = subprocess.check_output(['which', 'pip']).decode("utf-8").rstrip()
+                if whichPipStr:  # include execution path to 'pip'
+                    whichPipStr = "$ " + whichPipStr + " list" + os.linesep
+                else:
+                    whichPipStr = ""
+                # fetch output of "pip list" command (send stderr to null because it always contains warning message)
+                fetchedStr = subprocess.check_output(['pip', 'list'], stderr=subprocess.DEVNULL).decode("utf-8").rstrip()
+                if not fetchedStr:
+                    fetchedStr = ""
+                fetchedStr = whichPipStr + "Python version: " + sys.version.split()[0] + \
+                             os.linesep + os.linesep + fetchedStr
+                zip_file_obj.writestr('pip_libs_list.txt', fetchedStr)
+            except Exception:
+                logger.exception("Error adding pip-list libraries info to .zip file")
             zip_file_obj.close()
             return zip_path_name
     except Exception:

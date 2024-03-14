@@ -15,6 +15,11 @@ const MAX_LOG_VOLUME = 1.0;
 const LEADER_FLAG_CHAR = 'L';
 const WINNER_FLAG_CHAR = 'W';
 
+// Display sync warning above (ms)
+const SYNC_WARNING_THRESHOLD_1 = 2
+const SYNC_WARNING_THRESHOLD_3 = 10
+const SYNC_WARNING_THRESHOLD_10 = 60
+
 var speakObjsQueue = [];
 var checkSpeakQueueFlag = true;
 var checkSpeakQueueCntr = 0;
@@ -1079,6 +1084,8 @@ var rotorhazard = {
 	pi_time_request: false,
 	server_time_differential: null,
 	server_time_differential_samples: [], // stored previously acquired offsets
+	has_server_sync: false,
+	sync_within: Infinity,
 	winner_declared_flag: false,
 
 	timer: {
@@ -1087,6 +1094,9 @@ var rotorhazard = {
 		stopAll: function() {
 			this.deferred.stop();
 			this.race.stop();
+		},
+		running: function() {
+			return (this.deferred.running || this.race.running);
 		}
 	},
 	saveData: function() {
@@ -1254,6 +1264,9 @@ rotorhazard.timer.deferred.callbacks.start = function(timer){
 	}
 }
 rotorhazard.timer.deferred.callbacks.step = function(timer){
+	if (rotorhazard.has_server_sync && timer.warn_until < window.performance.now()) {
+		$('.timing-clock .warning').hide();
+	}
 	if (rotorhazard.voice_race_timer != 0) {
 		if (timer.time_tenths < -36000 && !(timer.time_tenths % -36000)) { // 2+ hour callout
 			var hours = timer.time_tenths / -36000;
@@ -1287,6 +1300,14 @@ rotorhazard.timer.deferred.callbacks.expire = function(timer){
 	rotorhazard.timer.deferred.stop();
 	$('.time-display').html(__('Wait'));
 }
+rotorhazard.timer.deferred.callbacks.self_resync = function(timer){
+	// display resync warning
+	if (rotorhazard.has_server_sync) {
+		$('.timing-clock .warning .value').text(__('recovery'));
+	}
+	timer.warn_until = window.performance.now() + 3000;
+	$('.timing-clock .warning').show();
+}
 
 // race/staging timer callbacks
 rotorhazard.timer.race.phased_staging = true;
@@ -1297,7 +1318,7 @@ rotorhazard.timer.race.callbacks.start = function(timer){
 }
 
 rotorhazard.timer.race.callbacks.step = function(timer){
-	if (timer.warn_until < window.performance.now()) {
+	if (rotorhazard.has_server_sync && timer.warn_until < window.performance.now()) {
 		$('.timing-clock .warning').hide();
 	}
 	if (timer.time_tenths < 0) {
@@ -1362,6 +1383,9 @@ rotorhazard.timer.race.callbacks.step = function(timer){
 	}
 	$('.time-display').html(timer.renderHTML());
 }
+rotorhazard.timer.race.callbacks.stop = function(timer){
+	$('.time-display').html(timer.renderHTML());
+}
 rotorhazard.timer.race.callbacks.expire = function(timer){
 	// play expired tone
 	if (rotorhazard.use_mp3_tones) {
@@ -1374,6 +1398,9 @@ rotorhazard.timer.race.callbacks.expire = function(timer){
 }
 rotorhazard.timer.race.callbacks.self_resync = function(timer){
 	// display resync warning
+	if (rotorhazard.has_server_sync) {
+		$('.timing-clock .warning .value').text(__('recovery'));
+	}
 	timer.warn_until = window.performance.now() + 3000;
 	$('.timing-clock .warning').show();
 }
@@ -1424,6 +1451,37 @@ function get_interrupt_message() {
 	}
 }
 
+function push_message(message, interrupt=false) {
+	system_messages.push(message);
+	if (interrupt) {
+		interrupt_message_queue.push(message);
+		if (interrupt_message_queue.length == 1) {
+			get_interrupt_message();
+		}
+	} else {
+		standard_message_queue.push(message);
+		if (standard_message_queue.length == 1) {
+			get_standard_message();
+		}
+	}
+
+	update_system_message_display();
+	$('#message-notification').prop('hidden', false);
+}
+
+function update_system_message_display() {
+	$('#message-count').html(system_messages.length);
+	$('#message-queue').empty();
+	if (system_messages.length) {
+		for (var m in system_messages) {
+			var sysmsg = system_messages[m];
+			$('#message-queue').append('<li><div class="message">' + sysmsg + '</div><button class="no-style">×<span class="screen-reader-text"> dismiss</span></button></li>');
+		}
+	} else {
+		$('#message-notification').prop('hidden', true);
+	}
+}
+
 function init_popup_generics() {
 	$('.open-mfp-popup').magnificPopup({
 		type:'inline',
@@ -1436,6 +1494,7 @@ if ($() && $().articulate('getVoices')[0] && $().articulate('getVoices')[0].name
 	rotorhazard.voice_language = $().articulate('getVoices')[0].name; // set default voice
 }
 rotorhazard.restoreData();
+
 
 if (typeof jQuery != 'undefined') {
 jQuery(document).ready(function($){
@@ -1565,29 +1624,27 @@ jQuery(document).ready(function($){
 		}
 	});
 
+	// display socket status
+	function socket_listener() {
+		if (socket.connected) {
+			$('.socket-warning').slideUp();
+		} else {
+			$('.socket-warning').slideDown();
+		}
+	}
+	setInterval(socket_listener, 1000);
+
 	// popup messaging
 	socket.on('priority_message', function (msg) {
-		system_messages.push(msg.message);
-		if (msg.interrupt) {
-			interrupt_message_queue.push(msg.message);
-			if (interrupt_message_queue.length == 1) {
-				get_interrupt_message()
-			}
-		} else {
-			standard_message_queue.push(msg.message);
-			if (standard_message_queue.length == 1) {
-				get_standard_message()
-			}
-		}
+		push_message(msg.message, msg.interrupt);
+	});
 
-		update_system_message_display();
-		$('#message-notification').prop('hidden', false);
+	socket.on('clear_priority_messages', function () {
+		clear_system_messages();
 	});
 
 	$(document).on('click', '#message-dismiss-all', function(el){
-		system_messages = [];
-		update_system_message_display();
-		$.magnificPopup.close();
+		clear_system_messages();
 	});
 
 	$(document).on('click', '#message-queue button', function(el){
@@ -1596,18 +1653,11 @@ jQuery(document).ready(function($){
 		update_system_message_display();
 	});
 
-	function update_system_message_display() {
-		$('#message-count').html(system_messages.length);
-		$('#message-queue').empty();
-		if (system_messages.length) {
-			for (var m in system_messages) {
-				var sysmsg = system_messages[m];
-				$('#message-queue').append('<li><div class="message">' + sysmsg + '</div><button class="no-style">×<span class="screen-reader-text"> dismiss</span></button></li>');
-			}
-		} else {
-			$('#message-notification').prop('hidden', true);
-		}
-	}
+    function clear_system_messages() {
+		system_messages = [];
+		update_system_message_display();
+		$.magnificPopup.close();
+    }
 
 	document.onkeyup = function(e) {
 		if (e.which == 27) {
@@ -2015,6 +2065,16 @@ var freq = {
 		S6: 5839,
 		S7: 5878,
 		S8: 5914,
+		O1: 5669,
+		O2: 5705,
+		O3: 5768,
+		O4: 5804,
+		O5: 5839,
+		O6: 5876,
+		O7: 5912,
+		Q1: 5677,
+		Q2: 5794,
+		Q3: 5902,
 	},
 	getFObjbyFData: function(fData) {
 		var keyNames = Object.keys(this.frequencies);
