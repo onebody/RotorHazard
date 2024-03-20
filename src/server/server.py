@@ -359,6 +359,22 @@ def render_run():
         num_nodes=RaceContext.race.num_nodes,
         nodes=nodes,
         cluster_has_secondaries=(RaceContext.cluster and RaceContext.cluster.hasSecondaries()))
+    
+    
+# author by:onebody
+# author_uri: "https://github.com/onebody",
+# 单独节点显示
+@APP.route('/runone/node/<int:node_id>')
+def render_runone_node(node_id):
+    '''比赛时单独节点 显示页面'''
+    use_inactive_nodes = 'true' if request.args.get('use_inactive_nodes') else 'false'
+    return render_template('runone.html', serverInfo=RaceContext.serverstate.template_info_dict, getOption=RaceContext.rhdata.get_option, __=__,
+        
+        num_nodes=RaceContext.race.num_nodes,
+        node_id=node_id-1,
+        use_inactive_nodes=use_inactive_nodes,
+        
+        cluster_has_secondaries=(RaceContext.cluster and RaceContext.cluster.hasSecondaries()))
 
 @APP.route('/current')
 def render_current():
