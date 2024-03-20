@@ -9,9 +9,6 @@ import inspect
 from RHUI import UIField, UIFieldType
 from eventmanager import Evt
 
-from FlaskAppObj import APP
-APP.app_context().push()
-
 class RHAPI():
     def __init__(self, race_context):
         self.API_VERSION_MAJOR = API_VERSION_MAJOR
@@ -988,8 +985,8 @@ class RaceAPI():
         else:
             return None
 
-    def stage(self, args=None):
-        return self._racecontext.race.stage(args)
+    def stage(self):
+        return self._racecontext.race.stage()
 
     def stop(self, doSave=False):
         return self._racecontext.race.stop(doSave)

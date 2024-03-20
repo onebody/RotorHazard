@@ -163,8 +163,6 @@ class HeatAutomator:
             for slot in slots:
                 slot.node_index = None
 
-            self._racecontext.rhdata.commit()
-
             # collect node data
             available_seats = []
             profile_freqs = json.loads(current_frequencies)

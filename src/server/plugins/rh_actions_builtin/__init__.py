@@ -1,12 +1,10 @@
 ''' builtin Actions '''
 
-import RHData
+import json
+import RHUtils
 from eventmanager import Evt
 from EventActions import ActionEffect
 from RHUI import UIField, UIFieldType, UIFieldSelectOption
-
-from FlaskAppObj import APP
-APP.app_context().push()
 
 class ActionsBuiltin():
     def __init__(self, rhapi):
@@ -14,24 +12,24 @@ class ActionsBuiltin():
 
     def speakEffect(self, action, args):
         if 'text' in action:
-            text = RHData.doReplace(self._rhapi, action['text'], args, True)
+            text = RHUtils.doReplace(self._rhapi, action['text'], args, True)
             self._rhapi.ui.message_speak(text)
 
     def messageEffect(self, action, args):
         if 'text' in action:
-            text = RHData.doReplace(self._rhapi, action['text'], args)
+            text = RHUtils.doReplace(self._rhapi, action['text'], args)
             self._rhapi.ui.message_notify(text)
 
     def alertEffect(self, action, args):
         if 'text' in action:
-            text = RHData.doReplace(self._rhapi, action['text'], args)
+            text = RHUtils.doReplace(self._rhapi, action['text'], args)
             self._rhapi.ui.message_alert(text)
 
 
     def clearMessagesEffect(self, action, args):
         self._rhapi.ui.clear_messages()
         if 'text' in action:
-            text = RHData.doReplace(self._rhapi, action['text'], args)
+            text = RHUtils.doReplace(self._rhapi, action['text'], args)
             self._rhapi.ui.message_notify(text)
 
     def scheduleEffect(self, action, _args):

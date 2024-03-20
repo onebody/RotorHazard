@@ -72,7 +72,7 @@
 		<div class="message"></div>
 	</div>
 	<header>
-		<a href="/" id="timer-name"><img src="../static/image/RotorHazard Icon.svg"> {{ getOption("timerName") }}</a>
+		<a href="/" id="timer-name"><img src="/static/image/RotorHazard Icon.svg"> {{ getOption("timerName") }}</a>
 		<nav id="nav-main">
 			<ul>
 				<li><a href="/event">{{ __("Event") }}</a></li>
@@ -95,7 +95,7 @@
 
 						<li><a href="/hardwarelog" class="admin-hide">{{ __('View Server Log') }}</a></li>
 
-						<li><a href="https://github.com/RotorHazard/RotorHazard/" target="_blank">{{ __("RotorHazard on GitHub") }} &#10132;&#xFE0E;</a></li>
+						<li><a href="https://github.com/onebody/RotorHazard/" target="_blank">{{ __("RotorHazard on GitHub") }} &#10132;&#xFE0E;</a></li>
 						<li><a href="#about" class="open-mfp-popup">{{ __("About RotorHazard") }}</a></li>
 					</ul>
 				</li>
@@ -111,7 +111,7 @@
 	{% block content %}{% endblock %}
 
 	<footer>
-		<p>Powered by <a href="https://github.com/RotorHazard/RotorHazard/"><span class="rh-logo"></span></a> v{{ serverInfo['release_version'] }}</p>
+		<p>Powered by <a href="https://github.com/onebody/RotorHazard/"><span class="rh-logo"></span></a> v{{ serverInfo['release_version'] }}</p>
 	</footer>
 
 	<a id="message-notification" hidden href="#message-center" class="open-mfp-popup"><span class="screen-reader-text">Open</span> <span id="message-count">0</span> <span class="screen-reader-text">messages</span></a>

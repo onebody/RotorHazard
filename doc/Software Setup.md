@@ -54,10 +54,10 @@ sudo raspi-config
   * "serial port hardware enabled": Yes
 
 
-### 3. Apply Changes to the 'boot' _config.txt_ file
+### 3. Apply Changes to '/boot/config.txt'
 Open a terminal window and enter:
 ```
-if [ -f "/boot/firmware/config.txt" ]; then sudo nano /boot/firmware/config.txt; else sudo nano /boot/config.txt; fi
+sudo nano /boot/config.txt
 ```
 Add the following lines to the end of the file:
 ```
@@ -73,7 +73,7 @@ core_freq=250
 dtoverlay=act-led,gpio=24
 dtparam=act_led_trigger=heartbeat
 ```
-If the Raspberry Pi in use is a Pi 4 model or older (not a Pi 5) and your hardware is the S32_BPill setup with [shutdown button](Shutdown%20Button.md) then add this line:
+If the Raspberry Pi in use is a Pi 4 model or older (not a Pi 5) then add this line:
 ```
 dtoverlay=gpio-shutdown,gpio_pin=18,debounce=5000
 ```
@@ -85,8 +85,6 @@ dtoverlay=i2c1-pi5
 Save and exit the editor (CTRL-X, Y, ENTER)
 
 *Notes:*
-
-On newer versions of the Raspberry Pi OS, the boot-config file location is "/boot/firmware/config.txt". On older versions it is "/boot/config.txt".
 
 The first line sets the transfer rate on the I2C bus (which is used to communicate with the Arduino node processors).
 
@@ -318,10 +316,6 @@ sudo apt-get install libopenjp2-7-dev
 - If your multiline panel image requires rotation, use `PANEL_ROTATE` with the number of 90-degree CCW rotations needed (0..3). 
 - If alternating lines appear jumbled, try setting `INVERTED_PANEL_ROWS` to `true`.
 
-#### LED Controller
-
-An alternative to the above methods is to use an LED Controller module, which may be connected to a USB port on any computer that is running the RotorHazard Server. See the [LED Controller repository](https://github.com/RotorHazard/LEDCtrlr) for details on how to wire and program an Arduino board as an LED controller.
-
 ### Java Support
 Java enables the calculating of IMD scores, which is helpful for selecting frequency sets with less interference between VTXs. To determine if Java is installed, run the following command:
 ```
@@ -369,6 +363,7 @@ The RotorHazard server dependencies will also need to be updated (be patient, th
 cd ~/RotorHazard/src/server
 pip install --upgrade --no-cache-dir -r requirements.txt
 ```
+(On some older setups that were not configured with a Python virtual environment ('venv'), the `pip` command may need to be preceded by `sudo`.)
 
 ----------------------------------------------------------------------------
 

@@ -1,5 +1,5 @@
 '''RotorHazard server script'''
-RELEASE_VERSION = "4.1.0-dev.8" # Public release version code
+RELEASE_VERSION = "4.1.0-beta.1" # Public release version code
 SERVER_API = 43 # Server API version
 NODE_API_SUPPORTED = 18 # Minimum supported node version
 NODE_API_BEST = 35 # Most recent node API
@@ -54,20 +54,6 @@ from functools import wraps
 from flask import Flask, send_file, request, Response, templating, redirect, abort, copy_current_request_context
 from flask_socketio import SocketIO, emit
 
-BASEDIR = os.getcwd()
-DB_FILE_NAME = 'database.db'
-DB_BKP_DIR_NAME = 'db_bkp'
-_DB_URI = 'sqlite:///' + os.path.join(BASEDIR, DB_FILE_NAME)
-
-APP = Flask(__name__, static_url_path='/static')
-APP.app_context().push()
-
-import FlaskAppObj
-FlaskAppObj.set_flask_app(APP)
-
-import Database
-Database.initialize(_DB_URI)
-
 import socket
 import random
 import string
@@ -77,6 +63,7 @@ import Config
 
 RHUtils.checkPythonVersion(MIN_PYTHON_MAJOR_VERSION, MIN_PYTHON_MINOR_VERSION)
 
+import Database
 import Results
 import Language
 import json_endpoints
@@ -123,12 +110,16 @@ Events = EventManager(RHAPI)
 RaceContext.events = Events
 EventActionsObj = None
 
+APP = Flask(__name__, static_url_path='/static')
+
 HEARTBEAT_THREAD = None
 BACKGROUND_THREADS_ENABLED = True
 HEARTBEAT_DATA_RATE_FACTOR = 5
 
 ERROR_REPORT_INTERVAL_SECS = 600  # delay between comm-error reports to log
 
+DB_FILE_NAME = 'database.db'
+DB_BKP_DIR_NAME = 'db_bkp'
 IMDTABLER_JAR_NAME = 'static/IMDTabler.jar'
 NODE_FW_PATHNAME = "firmware/RH_S32_BPill_node.bin"
 
@@ -174,6 +165,12 @@ if __name__ == '__main__' and len(sys.argv) > 1:
             print("Unrecognized command-line argument(s): {0}".format(sys.argv[1:]))
             sys.exit(1)
 
+BASEDIR = os.getcwd()
+APP.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(BASEDIR, DB_FILE_NAME)
+APP.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+Database.DB.init_app(APP)
+Database.DB.app = APP
+
 # start SocketIO service
 SOCKET_IO = SocketIO(APP, async_mode='gevent', cors_allowed_origins=Config.GENERAL['CORS_ALLOWED_HOSTS'], max_http_buffer_size=5e7)
 
@@ -188,7 +185,7 @@ server_ipaddress_str = None
 ShutdownButtonInputHandler = None
 Server_secondary_mode = None
 
-RaceContext.rhdata = RHData.RHData(Events, RaceContext, SERVER_API, DB_FILE_NAME, DB_BKP_DIR_NAME) # Primary race data storage
+RaceContext.rhdata = RHData.RHData(Database, Events, RaceContext, SERVER_API, DB_FILE_NAME, DB_BKP_DIR_NAME) # Primary race data storage
 
 RaceContext.pagecache = PageCache.PageCache(RaceContext, Events) # For storing page cache
 
@@ -314,12 +311,6 @@ def render_template(template_name_or_list, **context):
         logger.exception("Exception in render_template")
     return "Error rendering template"
 
-# Handler for closing and deallocating database resources
-@APP.teardown_appcontext
-def shutdown_session(exception=None):
-    if Database.DB_session:
-        Database.DB_session.remove()
-
 #
 # Routes
 #
@@ -359,21 +350,29 @@ def render_run():
         num_nodes=RaceContext.race.num_nodes,
         nodes=nodes,
         cluster_has_secondaries=(RaceContext.cluster and RaceContext.cluster.hasSecondaries()))
-    
-    
+
+
 # author by:onebody
 # author_uri: "https://github.com/onebody",
 # 单独节点显示
 @APP.route('/runone/node/<int:node_id>')
 def render_runone_node(node_id):
     '''比赛时单独节点 显示页面'''
-    use_inactive_nodes = 'true' if request.args.get('use_inactive_nodes') else 'false'
+    frequencies = [node.frequency for node in RaceContext.interface.nodes]
+    nodes = []
+    for idx, freq in enumerate(frequencies):
+        if freq:
+            nodes.append({
+                'freq': freq,
+                'index': idx
+            })
+
     return render_template('runone.html', serverInfo=RaceContext.serverstate.template_info_dict, getOption=RaceContext.rhdata.get_option, __=__,
-        
+        led_enabled=(RaceContext.led_manager.isEnabled() or (RaceContext.cluster and RaceContext.cluster.hasRecEventsSecondaries())),
+        vrx_enabled=RaceContext.vrx_manager.isEnabled(),
         num_nodes=RaceContext.race.num_nodes,
+        nodes=nodes,
         node_id=node_id-1,
-        use_inactive_nodes=use_inactive_nodes,
-        
         cluster_has_secondaries=(RaceContext.cluster and RaceContext.cluster.hasSecondaries()))
 
 @APP.route('/current')
@@ -2132,7 +2131,7 @@ def reload_callouts():
 @SOCKET_IO.on('play_callout_text')
 @catchLogExceptionsWrapper
 def play_callout_text(data):
-    message = RHData.doReplace(RHAPI, data['callout'], {}, True)
+    message = RHUtils.doReplace(RHAPI, data['callout'], {}, True)
     RaceContext.rhui.emit_phonetic_text(message)
 
 @SOCKET_IO.on('imdtabler_update_freqs')
@@ -2845,53 +2844,37 @@ def reportServerInfo():
                 __("Node firmware is newer than this server version and may not function properly"),
                 header='Warning', subclass='api-high')
 
-def check_req_entry(req_line, entry):
-    try:
-        if entry and len(entry) > 0:
-            first_item = entry[0].lower()
-            p = len(first_item) - 1
-            while p > 0 and not first_item[p].isalnum():  # find trailing "=="
-                p -= 1
-            trailing_str = first_item[p+1 : p+3]  # trailing "=="
-            if not trailing_str:
-                trailing_str = "=="
-            if len(entry) == 1:
-                module_name = first_item[:p+1]
-            else:
-                module_name = entry[1]
-            installed_ver = importlib.metadata.version(module_name)
-            required_ver = req_line[req_line.index(trailing_str)+2 : req_line.rindex('.')]
-            if not installed_ver.startswith(required_ver):
-                logger.warning(__("Package '{}' version mismatch: Required {}, but {} installed").format( \
-                                                        module_name, required_ver, installed_ver))
-                return 1
-    except ModuleNotFoundError as ex:
-        logger.info("Unable to check package requirements: {}".format(ex))
+def check_req_entry(req_line, module_name):
+    installed_ver = importlib.metadata.version(module_name)
+    required_ver = req_line[req_line.index('==')+2 : req_line.rindex('.')]
+    if not installed_ver.startswith(required_ver):
+        logger.warning(__("Package '{}' version mismatch: Required {}, but {} installed").format( \
+                                                module_name, required_ver, installed_ver))
+        return 1
     return 0
 
 def check_requirements():
     try:
         import importlib.metadata  # @UnusedImport pylint: disable=redefined-outer-name
-        chk_list = [['Flask=='], ['Flask-SocketIO==','flask_socketio'], ['Flask_SocketIO=='], \
-                    ['gevent=='], ['gevent-websocket=='], ['monotonic=='], ['requests=='], \
-                    ['itsdangerous=='], ['Jinja2==', 'Jinja2'], ['Werkzeug=='], ['MarkupSafe=='], \
-                    ['python-socketio=='], ['python-engineio=='], ['websocket-client=='], \
-                    ['SQLAlchemy=='], ['greenlet=='], ['cffi=='], ['pyserial=='] ]
+        chk_list = [['Flask==','flask'], ['Flask-SocketIO==','flask_socketio'], \
+                    ['Flask_SocketIO==','flask_socketio'], \
+                    ['flask_sqlalchemy==','flask_sqlalchemy'], ['gevent==','gevent'], \
+                    ['gevent-websocket==','gevent-websocket'], ['monotonic==','monotonic'], \
+                    ['requests==','requests']]
         num_mismatched = 0
-        num_checked = 0
-        req_file_name = "requirements.txt" if RHUtils.is_sys_raspberry_pi() else "reqsNonPi.txt"
-        with open(req_file_name) as rf:
+        with open('requirements.txt') as rf:
             for line in rf.readlines():
                 for entry in chk_list:
                     if line.startswith(entry[0]):
-                        num_mismatched += check_req_entry(line, entry)
-                        num_checked += 1
-        logger.debug("Number of required libraries checked: {}".format(num_checked))
+                        num_mismatched += check_req_entry(line, entry[1])
         if num_mismatched > 0:
-            logger.warning(__('Try "pip install --upgrade --no-cache-dir -r {}"'.format(req_file_name)))
+            if RHUtils.is_sys_raspberry_pi():
+                logger.warning(__('Try "pip install --upgrade --no-cache-dir -r requirements.txt"'))
             set_ui_message('check_reqs',
-                __("Package-version mismatches detected. Try: <code>pip install --upgrade --no-cache-dir -r {}</code>".format(req_file_name)),
+                __("Package-version mismatches detected. Try: <code>pip install --upgrade --no-cache-dir -r requirements.txt</code>"),
                 header='Warning', subclass='none')
+    except ModuleNotFoundError as ex:
+        logger.debug("Unable to check package requirements: {}".format(ex))
     except:
         logger.exception("Error checking package requirements")
 
@@ -3177,32 +3160,22 @@ if Config.LED['LED_COUNT'] > 0:
     # note: any calls to 'RaceContext.rhdata.get_option()' need to happen after the DB initialization,
     #       otherwise it causes problems when run with no existing DB file
     led_brightness = RaceContext.rhdata.get_optionInt("ledBrightness")
-    if not Config.LED['SERIAL_CTRLR_PORT']:
+    try:
+        ledModule = importlib.import_module(led_type + '_leds')
+        strip = ledModule.get_pixel_interface(config=Config.LED, brightness=led_brightness)
+    except ImportError:
+        # No hardware LED handler, the OpenCV emulation
         try:
-            ledModule = importlib.import_module(led_type + '_leds')
+            ledModule = importlib.import_module('cv2_leds')
             strip = ledModule.get_pixel_interface(config=Config.LED, brightness=led_brightness)
         except ImportError:
-            # No hardware LED handler, the OpenCV emulation
+            # No OpenCV emulation, try console output
             try:
-                ledModule = importlib.import_module('cv2_leds')
+                ledModule = importlib.import_module('ANSI_leds')
                 strip = ledModule.get_pixel_interface(config=Config.LED, brightness=led_brightness)
             except ImportError:
-                # No OpenCV emulation, try console output
-                try:
-                    ledModule = importlib.import_module('ANSI_leds')
-                    strip = ledModule.get_pixel_interface(config=Config.LED, brightness=led_brightness)
-                except ImportError:
-                    ledModule = None
-                    logger.info('LED: disabled (no modules available)')
-    else:
-        try:
-            ledModule = importlib.import_module('ledctrlr_leds')
-            strip = ledModule.get_pixel_interface(config=Config.LED, brightness=led_brightness)
-        except Exception as ex:
-            if "FileNotFound" in str(ex):
-                logger.error("Serial port not found for LED controller: {}".format(ex))
-            else:
-                logger.exception("Error initializing serial LED controller: {}".format(ex))
+                ledModule = None
+                logger.info('LED: disabled (no modules available)')
 else:
     logger.debug('LED: disabled (configured LED_COUNT is <= 0)')
 if strip:

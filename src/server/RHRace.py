@@ -16,9 +16,6 @@ from util.InvokeFuncQueue import InvokeFuncQueue
 from RHUtils import catchLogExceptionsWrapper
 from led_event_manager import ColorVal
 
-from FlaskAppObj import APP
-APP.app_context().push()
-
 logger = logging.getLogger(__name__)
 
 class RHRace():
@@ -256,11 +253,10 @@ class RHRace():
 
     @catchLogExceptionsWrapper
     def race_start_thread(self, start_token):
-        APP.app_context().push()
         # clear any lingering crossings at staging (if node rssi < enterAt)
         for node in self._racecontext.interface.nodes:
             if node.crossing_flag and node.frequency > 0 and \
-                (self.format is self._racecontext.serverstate.secondary_race_format or \
+                (self.format is self._racecontext.serverstate.secondary_race_format or
                 (node.current_pilot_id != RHUtils.PILOT_ID_NONE and node.current_rssi < node.enter_at_level)):
                 logger.info("Forcing end crossing for node {0} at staging (rssi={1}, enterAt={2}, exitAt={3})".\
                            format(node.index+1, node.current_rssi, node.enter_at_level, node.exit_at_level))
@@ -349,7 +345,6 @@ class RHRace():
 
     @catchLogExceptionsWrapper
     def race_expire_thread(self, start_token):
-        APP.app_context().push()
         race_format = self.format
         if race_format and race_format.unlimited_time == 0: # count down
             gevent.sleep(race_format.race_time_sec)
@@ -461,8 +456,7 @@ class RHRace():
         self._racecontext.rhui.emit_current_leaderboard()
 
         if doSave:
-            # do with a bit of delay to prevent clearing results before stop event-actions can process them
-            gevent.spawn_later(0.05, self.do_save_actions)
+            self.do_save_actions()
 
     @catchLogExceptionsWrapper
     def save(self):
@@ -567,7 +561,6 @@ class RHRace():
     def add_lap(self, node, lap_timestamp_absolute, source):
         '''Handles pass records from the nodes.'''
 
-        APP.app_context().push()
         logger.debug('Pass record: Node={}, abs_ts={:.3f}, source={} ("{}")' \
                      .format(node.index+1, lap_timestamp_absolute, source, self._racecontext.interface.get_lap_source_str(source)))
         node.pass_crossing_flag = False  # clear the "synchronized" version of the crossing flag
@@ -1534,20 +1527,15 @@ class RHRace():
 
     def finalize_heat_set(self, new_heat_id): #finalize_current_heat_set
         if self.race_status == RaceStatus.READY:
+            self.current_heat = new_heat_id
+            self._racecontext.rhdata.set_option('currentHeat', self.current_heat)
 
             if new_heat_id == RHUtils.HEAT_ID_NONE:
                 self.node_pilots = {}
                 self.node_teams = {}
-                if self.current_heat != new_heat_id:
-                    logger.info("Switching to practice mode; races will not be saved until a heat is selected")
-                    self.current_heat = new_heat_id
-                else:
-                    logger.debug("Running in practice mode; races will not be saved until a heat is selected")
-                self._racecontext.rhdata.set_option('currentHeat', self.current_heat)
+                logger.info("Switching to practice mode; races will not be saved until a heat is selected")
 
             else:
-                self.current_heat = new_heat_id
-                self._racecontext.rhdata.set_option('currentHeat', self.current_heat)
                 self.node_pilots = {}
                 self.node_teams = {}
                 for idx in range(self.num_nodes):

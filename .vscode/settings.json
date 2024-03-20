@@ -1,0 +1,4 @@
+{
+    "vim.startInInsertMode": true,
+    "vim.cursorStylePerMode.insert": "line"
+}
