@@ -1839,22 +1839,6 @@
 			$('.callout-items').append(new_callout)
 		}
 
-		$('#btn_node_0').click(function (event) {
-			window.location.href = "/runone/node/1";
-		});
-		
-		$('#btn_node_1').click(function (event) {
-			window.location.href = "/runone/node/2";
-		});
-		
-		$('#btn_node_2').click(function (event) {
-			window.location.href = "/runone/node/3";
-		});
-		
-		$('#btn_node_3').click(function (event) {
-			window.location.href = "/runone/node/4";
-		});		
-
 		$(document).on('click', '.play_callout', function (event) {
 			var text = $(this).siblings('.callout_text').val();
 			socket.emit('play_callout_text', {
@@ -2319,7 +2303,9 @@
 					Loading...
 				</h4>
 				<div class="crossing crossing_flag_{{ node.index }}"><span>{{ __('Clear') }}</span></div>
-				<div style="text-align:center" data-node="{{ node.index }}"><button id="btn_node_{{node.index}}">只看{{node.index+1}}</button></span></div>
+				<div style="text-align:center" data-node="{{ node.index }}">
+					<a class="button-like" href="/runone/node/{{node.index+1}}">只看{{node.index+1}}</a>
+					</span></div>
 				<table class="laps" id="current_laps_{{ node.index }}">
 					<thead>
 					</thead>
