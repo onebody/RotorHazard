@@ -1615,6 +1615,9 @@ jQuery(document).ready(function($){
 	// startup socket connection
 	socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port);
 
+	//socket = io.connect('http://192.168.3.141:5000');
+
+
 	// reconnect when visibility is regained
 	$(document).on('visibilitychange', function(){
 		if (!document['hidden']) {

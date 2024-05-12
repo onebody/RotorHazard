@@ -3028,7 +3028,8 @@ if RHUtils.is_sys_raspberry_pi() and RHUtils.is_S32_BPill_board():
 hardwareHelpers = {}
 for helper in search_modules(suffix='helper'):
     try:
-        hardwareHelpers[helper.__name__] = helper.create(Config)
+        # hardwareHelpers[helper.__name__] = helper.create(Config)
+        hardwareHelpers[helper.__name__] = helper.create(RaceContext.serverconfig)
     except Exception as ex:
         logger.warning("Unable to create hardware helper '{0}':  {1}".format(helper.__name__, ex))
 
