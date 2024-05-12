@@ -1,145 +1,146 @@
-# 校准和传感器参数调整
+# Calibration and Sensor Tuning Parameters
 
-- [介绍](#介绍)
-- [参数](#参数)
+- [Introduction](#introduction)
+- [Parameters](#parameters)
     - [EnterAt](#enterat)
     - [ExitAt](#exitat)
-    - [校准模式](#校准模式)
-    - [开始比赛 EnterAt/ExitAt 变化规则](#开始比赛-enteratexitat-变化规则)
-- [调谐](#调谐)
-    - [设置*EnterAt*值](#设置enterat值)
-    - [设置*ExitAt*值](#设置exitat值)
-    - [调优示例](#调优示例)
-    - [替代调整方法](#替代调整方法)
-- [提示](#提示)
-- [故障排除](#故障排除)
-    - [缺少圈数(节点通常*Clear*)](#缺少圈数节点通常clear)
-    - [缺少圈数(节点通常*Crossing*)](#缺少圈数节点通常crossing)
-    - [被额外多记圈数](#被额外多记圈数)
-    - [一次记录多圈](#一次记录多圈)
-    - [圈数需要很长时间才能注册](#圈数需要很长时间才能注册)
-    - [节点永远不会显示*crossing*](#节点永远不会显示crossing)
-    - [节点永远不会显示*clear*](#节点永远不会显示clear)
+    - [Calibration Mode](#calibration-mode)
+    - [Start of Race EnterAt/ExitAt Lowering](#start-of-race-enteratexitat-lowering)
+- [Tuning](#tuning)
+    - [Set the *EnterAt* value](#set-the-enterat-value)
+    - [Set the *ExitAt* value](#set-the-exitat-value)
+    - [Tuning Example](#tuning-example)
+    - [Alternate Tuning Method](#alternate-tuning-method)
+- [Notes](#notes)
+- [Troubleshooting](#troubleshooting)
+    - [Missing Laps (System usually *Clear*)](#missing-laps-system-usually-clear)
+    - [Missing Laps (System usually *Crossing*)](#missing-laps-system-usually-crossing)
+    - [Laps register on other parts of a course](#laps-register-on-other-parts-of-a-course)
+    - [Many laps register at once](#many-laps-register-at-once)
+    - [Laps take a long time to register](#laps-take-a-long-time-to-register)
+    - [Node is never *crossing*](#node-is-never-crossing)
+    - [Node is never *clear*](#node-is-never-clear)
 
-##介绍
-如果您在校准计时器时遇到困难，请确保您已正确构建和放置射设备。
+## Introduction
 
-每个节点都会跟踪选定频率上的信号强度 (RSSI)，并使用该相对强度来确定发射器是否靠近定时门。 RotorHazard 计时系统允许您单独校准每个节点，以便您可以补偿系统和环境中的行为和硬件差异。
+_If you are having trouble calibrating your timer, be sure you have constructed and placed [RF shielding](Shielding%20and%20Course%20Position.md) correctly._
 
-节点可以是Crossing或Clear。如果节点处于Clear 状态，则系统认为发送器不在定时门附近，因为 RSSI 较低。如果是Crossing，系统认为发送器正在通过定时门，因为 RSSI 很高。一旦穿越完成并且系统返回到Clear 状态，将会记录一圈通过情况。
+Each node keeps track of the signal strength (RSSI) on a selected frequency and uses this relative strength to determine whether a transmitter is near the timing gate. The RotorHazard timing system allows you to calibrate each node individually so that you can compensate for the behavior and hardware differences across your system and environment.
+
+A node can be *Crossing* or *Clear*. If a node is *Clear*, the system believes a transmitter is not near the timing gate because the RSSI is low. If it is *Crossing*, the system believes a transmitter is passing by the timing gate because the RSSI is high. A lap pass will be recorded once the *Crossing* is finished and the system returns to *Clear*.
 
 ![Tuning Graph](img/Tuning%20Graph-06.svg)<br />
-比赛期间的 RSSI 与此图类似，有许多可见的峰值和谷值。当发射器接近定时门时，信号上升。
+_RSSI during a race appears similar to this graph with many visible peaks and valleys. As the transmitter nears the timing gate, the signal rises._
 
-##参数
-影响Crossing状态的两个参数：EnterAt和ExitAt。
+## Parameters
+Two parameters that affect the *Crossing* status: *EnterAt* and *ExitAt*.
 
-###EnterAt
-当 RSSI 升至或高于此水平时，系统将切换到Crossing状态。它由红线表示。
+### EnterAt
+The system will switch to *Crossing* when RSSI raises to or above this level. It is indicated by a red line.
+
 ### ExitAt
-一旦 RSSI 值低于此水平，系统将切换到Clear状态。它由橙色线表示。
+The system will switch to *Clear* once the RSSI value drops below this level. It is indicated by an orange line.
 
-在EnterAt和ExitAt之间，系统将根据其之前的状态保持Crossing或Clear 。
+In between *EnterAt* and *ExitAt*, the system will remain *Crossing* or *Clear* depending on its previous state.
 
 ![Sample RSSI Graph](img/Sample%20RSSI%20Graph.svg)
 
-###校准模式
+### Calibration Mode
 
-手动校准模式: 将始终使用用户设置的EnterAt和ExitAt值。
+*Manual* calibration mode will always use the *EnterAt* and *ExitAt* values provided by the user.
 
-自适应校准模式: 使用用户定义的点，除非有已保存的比赛。当保存的比赛存在时，改变预赛将启动对先前比赛数据的搜索，以获得在即将到来的比赛中使用的最佳校准值。这些值将被复制并替换所有节点的当前EnterAt和ExitAt值。如果比赛总监确认传入的圈数或通过Marshal页面重新计算它们，则此模式可以改进校准，因为可以保存更多比赛。
+*Adaptive* calibration mode uses the user-defined points unless there are saved races. When saved races exist, changing heats will initiate a search of previous race data for the best calibration values to use in the upcoming race. These values are copied and replace the current *EnterAt* and *ExitAt* values for all nodes. This mode improves calibration as more races are saved if the race director confirms the incoming lap counts or recalculates them through the *Marshal* page.
 
-###开始比赛 EnterAt/ExitAt 变化规则
+### Start of Race EnterAt/ExitAt Lowering
 
-在比赛开始时，可​​能会有许多飞机同时通过起始门，这可能会导致在某些节点上检测到较低的 RSSI 值（这可能会导致错过起始门通过）。为了解决这个问题，可以配置以下设置：
+At the beginning of a race there can be many quads going through the start gate at the same time, and this can result in lower RSSI values being detected on some of the nodes (which could result in an initial gate pass being missed). To account for this, the following settings may be configured:
 
-比赛开始 EnterAt/ExitAt 降低量（百分比）：设置所有节点的 EnterAt 和 ExitAt 值将减少的量（百分比）。例如，如果配置了 30（百分比），则 EnterAt 值将降低到接近 ExitAt 值 30% 的值。 （因此，如果 EnterAt=90 且 ExitAt=80，则 EnterAt 值将降低至 87。）ExitAt 值也将降低相同的量。
+*Start of race EnterAt/ExitAt lowering amount (percent):* Sets the amount that the EnterAt and ExitAt values for all nodes will be reduced, as a percentage. For instance, if 30 (percent) is configured, the EnterAt value will be lowered to a value that is 30% closer to the ExitAt value. (So if EnterAt=90 and ExitAt=80, the EnterAt value will be lowered to 87.) The ExitAt value will be also be lowered by the same amount.
 
-比赛开始 EnterAt/ExitAt 降低持续时间（秒）：设置 EnterAt 和 ExitAt 值降低的最长时间（以秒为单位）。如果检测到节点的门穿越在此时间之前完成，则该节点的 EnterAt 和 ExitAt 值将被恢复。
+*Start of race EnterAt/ExitAt lowering duration (seconds):* Sets the maximum amount of time (in seconds) that the EnterAt and ExitAt values will be lowered. If a gate crossing for a node is detected as completed before this time then the EnterAt and ExitAt values for that node will be restored then.
 
-建议值为 30（百分比）和 10（秒）。如果这些设置中的任何一个配置为零，则 EnterAt 和 ExitAt 值将不会降低。
+Suggested values are 30 (percent) and 10 (seconds). If either of these settings are configured as zero then the EnterAt and ExitAt values will not be lowered.
 
-注意事项：在Marshal页面上会考虑这些设置，因此如果它们非零，则即使峰值 RSSI 看起来低于显示的 EnterAt 级别，也可能会检测到节点上的第一圈通过。
+Note that on the *Marshal* page these settings are taken into consideration, so if they are non-zero then the first lap pass on a node may be detected even though the peak RSSI appears to be lower than the EnterAt level displayed.
 
+## Tuning
+Before tuning, power up the timer and keep it running for a few minutes to allow the receiver modules to warm up. The RSSI values tend to increase by a few points as the timer heats up.
 
-## 调谐
-在调谐之前，启动计时器并让其持续运行几分钟，以使接收模块预热。随着计时器加热，RSSI 值往往会增加几个点。
+You can use the *Marshal* page to tune values visually. Collect data by running a race with a pilot on each channel, then save it. Open the *Marshal* page and view the race data, adjusting Enter and Exit points until the number of laps is correct. Save the Enter/Exit points to each node to use as calibration for future races.
 
-您可以使用 Marshal 页面直观地调谐值。通过让飞行员在每个频道上进行比赛来运行比赛来收集数据，然后保存它。打开 Marshal 页面并查看比赛数据，调整进入和退出点，直到圈数正确。将进入/退出点保存到每个节点，以用作未来比赛的校准。
-
-###设置*EnterAt*值
+### Set the *EnterAt* value
 ![Tuning Graph](img/Tuning%20Graph-10.svg)
 
-* 低于所有门道口的峰值
-* 当飞机不靠近门时高于任何峰值
-* 高于 *ExitAt*
+* Below the peak of all gate crossings
+* Above any peak when the transmitter is not near the gate
+* Higher than *ExitAt*
 
-###设置*ExitAt*值
+### Set the *ExitAt* value
 ![Tuning Graph](img/Tuning%20Graph-11.svg)
 
-* 在穿越大门期间出现的任何低于谷值​​
-* 高于任何一圈中看到的最低值
-* 低于*EnterAt*
+* Below any valleys that occur during a gate crossing
+* Above the lowest value seen during any lap
+* Lower than *EnterAt*
 
-ExitAt 值设置为接近 EnterAt，允许计时器快速宣布并显示圈数，但可能无法阻止在单次通过门期间记录多圈数。
+ExitAt values set close to EnterAt allow the timer to announce and display laps quickly, but may not prevent multiple laps from being recorded during a single gate pass.
 
-### 调优示例
+### Tuning Example
 ![Tuning Graph](img/Tuning%20Graph-01.svg)<br />
-记录两圈。信号两次上升到EnterAt以上，然后下降到ExitAt以下，每个峰值一次。在这两个交叉窗口内，计时器找到最强的信号（噪声过滤后）用作记录的单圈时间。
+_Two laps are recorded. The signal rises above *EnterAt* and then falls below *ExitAt* twice, once at each peak. Within these two crossing windows, the timer finds the strongest signal (after noise filtering) to use as the recorded lap time._
 
-### 替代调整方法
+### Alternate Tuning Method
 
-*Capture*按钮可用于将当前 RSSI 读数存储为每个节点的EnterAt或ExitAt值。也可以手动输入和调整这些值。
+The *Capture* buttons may be used to store the current RSSI reading as the *EnterAt* or *ExitAt* value for each node. The values may also be entered and adjusted manually.
 
-在正确的通道上启动四核并使其非常接近计时器几秒钟。这将允许计时器捕获该节点的峰值 RSSI 值。应该对正在调整的每个节点/通道执行此操作。将显示峰值。
+Power up a quad on the correct channel and bring it very close to the timer for a few seconds. This will allow the timer to capture the peak RSSI value for that node. This should be done for each node/channel that is being tuned. The peak value will be displayed.
 
 #### EnterAt
-EnterAt值比较合适开始取值是距计时器约 1.5–3米（5–10 英尺）的位置来获取信号值。
+A good starting point for *EnterAt* is to capture value with a quad about 1.5–3m (5–10 ft) away from the timer.
 
 #### ExitAt
-ExitAt值比较合适开始取值是距计时器约 6-9米（20-30 英尺）的位置来获取信号值。
+A good starting point for *ExitAt* is to capture the value with a quad about 6–9m (20–30 ft) away from the timer.
 
-## 提示
-* 较低的ExitAt值仍然可以提供准确的计时，但系统在宣布圈数之前将等待更长的时间。延迟宣布不会影响计时器的准确性。
-* *Minimum Lap Time* 设置可用于防止额外通过，但可能会掩盖过早触发的穿越。强烈建议将行为设置为“Highlight”（而不是“Discard”）并检查每个事件。
-* 如果您在比赛期间遇到计时问题，但 RSSI 正在响应飞行员的发射器，请不要停止比赛。比赛完成后保存并访问Marshal页面。 RSSI 历史记录被保存，并且可以使用更新的调整值准确地重新计算比赛。
+## Notes
+* A low *ExitAt* value can still provide accurate timing, but the system will wait longer before announcing laps. A delay in announcing does not affect the accuracy of the timer.
+* The *Minimum Lap Time* setting can be used to prevent extra passes, but might mask crossings that are triggered too early. It is strongly recommended to set the behavior to *Highlight* (rather than *Discard*) and review each incidence.
+* If you experience timing issues during a race but the RSSI is responding to the pilot's transmitter, do not stop the race. Save the race after it completes and visit the *Marshal* page. RSSI history is saved and the race can be accurately recalculated with updated tuning values.
 
-## 故障排除
+## Troubleshooting
 
-### 缺少圈数(节点通常*Clear*)
+### Missing Laps (Node usually *Clear*)
 ![Tuning Graph](img/Tuning%20Graph-04.svg)<br />
-如果 RSSI 未达到EnterAt，则不会记录圈数。
-* 降低 *EnterAt* 值
+_Laps are not recorded if RSSI does not reach **EnterAt**._
+* Lower *EnterAt*
 
-### 缺少圈数(节点通常*Crossing*)
+### Missing Laps (Node usually *Crossing*)
 ![Tuning Graph](img/Tuning%20Graph-05.svg)<br />
-如果ExitAt太低，则圈数将合并在一起，因为前一圈穿越永远不会完成。
-* 提高 *ExitAt*
+_Laps are merged together if **ExitAt** is too low, because the first lap crossing never completes._
+* Raise *ExitAt*
 
-### 被额外多记圈数
+### Laps register on other parts of a course
 ![Tuning Graph](img/Tuning%20Graph-03.svg)<br />
-_当EnterAt太低时会发生多记录圏数的情况。_
-* 提高 *EnterAt* 直到 *crossings* 仅在计时门边上有效. (保存比赛后使用Marshal页面来确定并保存最佳值。)
+_Extra crossings occur when **EnterAt** is too low._
+* Raise *EnterAt* until *crossings* only begin near the timing gate. (Use the *Marshal* page after saving a race to determine and save the best values.)
 
-### 一次记录多圈
+### Many laps register at once
 ![Tuning Graph](img/Tuning%20Graph-02.svg)<br />
-_当ExitAt太接近EnterAt时，会出现过多圈数，因为圈数退出太快。_
-* 如果可能的话，提高 *EnterAt* 值
-* 降低 *ExitAt* 值
+_Too many laps occur when **ExitAt** is too close to **EnterAt**, because laps exit too quickly._
+* Raise *EnterAt*, if possible
+* Lower *ExitAt*
 
-*Minimum Lap Time* 设置始终保留第一个通过，并丢弃出现过早的后续圈数。在许多情况下，第二次穿越实际上是正确的，例如当飞行员错过登机门并返回以完成登机门时。建议将*Minimum Lap Time*行为保留为*Highlight*而不是*Discard*，以便比赛组织者可以手动审查每个案例。
+The *Minimum Lap Time* setting always keeps the first crossing and disards subsequent laps that occur too soon. In many instances, the second crossing is actually correct, such as when a pilot misses the gate and circles back to complete it. It is recommended to leave the *Minimum Lap Time* behavior at *Highlight* rather than *Discard* so that a race organizer can manually review each case.
 
-### 圈数需要很长时间才能注册
+### Laps take a long time to register
 ![Tuning Graph](img/Tuning%20Graph-09.svg)<br />
-_如果ExitAt较低，则圈数记录需要很长时间才能完成。这不会影响记录时间的准确性。_
-* 提高 *ExitAt*
+_Lap recording takes a long time to complete if **ExitAt** is low. This does not affect the accuracy of the recorded time._
+* Raise *ExitAt*
 
-### 节点永远不会显示*crossing*
+### Node is never *crossing*
 ![Tuning Graph](img/Tuning%20Graph-07.svg)<br />
-_如果 RSSI 从未达到EnterAt ，则不会记录圈数。_
-* 降低 *EnterAt*
+_Laps will not register if RSSI never reaches **EnterAt**._
+* Lower *EnterAt*
 
-### 节点永远不会显示*clear*
+### Node is never *clear*
 ![Tuning Graph](img/Tuning%20Graph-08.svg)<br />
-_如果 RSSI 从未低于ExitAt ，则圈数将不会完成。_
-* 提高 *ExitAt*
+_Laps will not complete if RSSI never drops below **ExitAt**._
+* Raise *ExitAt*

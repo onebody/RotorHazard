@@ -1,29 +1,29 @@
-# RotorHazard Documentation
+# RotorHazard 说明文档
 
-## Timing Guides
-* [User Guide](User%20Guide.md)
-* [Calibration Guide](Tuning%20Parameters.md)
-* [Shielding and Course Position](Shielding%20and%20Course%20Position.md)
-* [Event Setup Guide](Event%20Setup%20Guide.md)
+## 计时器 指南
+* [用户指南](User%20Guide.md)
+* [校准指南](Tuning%20Parameters.md)
+* [屏蔽和设置](Shielding%20and%20Course%20Position.md)
+* [赛事设置指南](Event%20Setup%20Guide.md)
 
-## System Reference
-* [Hardware Setup Instructions](Hardware%20Setup.md)
-* [Software Setup Instructions](Software%20Setup.md)
-* [Raspberry Pi Reference](Raspberry%20Pi%20Reference.md)
+## 系统设置
+* [硬件设置说明](Hardware%20Setup.md)
+* [软件设置说明](Software%20Setup.md)
+* [树莓派参考](Raspberry%20Pi%20Reference.md)
 
-## Optional Features
-* [Plugins](Plugins.md)
-* [Split Timing Guide](Cluster.md)
-* [USB Nodes](USB%20Nodes.md)
-* [Video Receiver Control](Video%20Receiver.md)
+## 可选功能
+* [插件](Plugins.md)
+* [分段计时指南(集群设置)](Cluster.md)
+* [USB节点模式](USB%20Nodes.md)
+* [视频接收控制](Video%20Receiver.md)
 
-## General Reference
-* [FPV Frequency Reference Chart](Frequency%20Reference.md)
+## 一般参考
+* [FPV 频率参考图](Frequency%20Reference.md)
 
 <br />
 
 ---
 
-* [Build Resources (PCB, etc) &#10132;&#xFE0E;](https://github.com/RotorHazard/RotorHazard/tree/main/resources/README.md)
-* [Developer Documentation](Development.md)
-* <a href="https://github.com/RotorHazard/RotorHazard">RotorHazard on GitHub &#10132;&#xFE0E;</a>
+* [构建资料 (PCB等) &#10132;&#xFE0E;](https://github.com/onebody/RotorHazard/tree/main/resources/README.md)
+* [开发文档](Development.md)
+* <a href="https://github.com/onebody/RotorHazard">RotorHazard on GitHub &#10132;&#xFE0E;</a>
