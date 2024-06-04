@@ -1,0 +1,13 @@
+{
+    "name": "OBS OSD Websocks",
+    "author": "onebody",
+    "author_uri": "https://github.com/onebody/",
+    "description": "Connect to OBS to show pilot name、color、score",
+    "info_uri": "https://github.com/onebody/RH-OBS-OSD-Websocks-Plugin",
+    "license": "RotorHazard",
+    "license_uri": "https://github.com/RotorHazard/RotorHazard/blob/main/LICENSE",
+    "version": "1.0",
+    "required_rhapi_version": "1.0",
+    "update_uri": null,
+    "text_domain": null
+}
