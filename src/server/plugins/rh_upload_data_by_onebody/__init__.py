@@ -25,7 +25,7 @@ def initialize(rhapi):
     rhapi.fields.register_pilot_attribute( UIField('safetycheck', "Safety Checked", UIFieldType.CHECKBOX) )
     rhapi.fields.register_pilot_attribute( UIField('fpvs_uuid', "FPVS Pilot UUID", UIFieldType.TEXT) )
 
-    rhapi.ui.register_panel("fpvscores_run", "FPV Scores", "run")
+    rhapi.ui.register_panel("fpvscores_run", "FPV成绩记录", "run")
 
     rhapi.ui.register_quickbutton(
         "fpvscores_run", "fpvscores_clear", "清除数据", runClearBtn, {"rhapi": rhapi}

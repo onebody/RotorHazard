@@ -5,6 +5,8 @@ logger = logging.getLogger(__name__)
 from eventmanager import Evt
 from EventActions import ActionEffect
 from RHUI import UIField, UIFieldType, UIFieldSelectOption
+from Results import RacePointsMethod
+
 import simpleobsws
 import asyncio
 import asyncio_gevent
@@ -134,6 +136,9 @@ class OBS_OSD_Actions():
             except:
                 logger.debug("Unable to change scene")
 
+    def obsPoints_method_fn(rhapi, leaderboard, args):
+        logger.info("OBS scene changed to: {}")
+
     def register_handlers(self, args):
         if 'register_fn' in args:
             for effect in [
@@ -143,10 +148,14 @@ class OBS_OSD_Actions():
                     [
                         UIField("scene", "OBS场景", UIFieldType.TEXT),
                     ],
-                )
+                ),
+                RacePointsMethod(
+                    "OBS Points Method", 
+                    self.obsPoints_method_fn
+                    )
             ]:
                 args['register_fn'](effect)
-                
+
     # 单圏结束同步数据到OSD
     def onPilotAlter(self, args):
         args["register_fn"](self)
