@@ -336,7 +336,7 @@
 			"Staging Tones": "警告提示音",
 			"Start of race EnterAt/ExitAt lowering amount (percent)": "比赛开始EnterAt/ExitAt递减量（百分比）",
 			"Start of race EnterAt/ExitAt lowering duration (seconds)": "比赛开始EnterAt/ExitAt下降持续时间（秒）",
-			"Start Race": "起飞",
+			"Start Race": "开始比赛",
 			"Start": "开始",
 			"Starting in": "起飞点",
 			"Stop Race": "停止比赛",
@@ -418,7 +418,10 @@
 			"Phonetic Time Format":"语音时间规则",
 			"Cluster Status":"集群状态",
 			"Environment Status":"环境状态",
-			"Event Totals":"赛事成绩统计"
+			"Event Totals":"赛事成绩统计",
+			"View Event Details":"查看赛事详情",
+			"Marshal Race Data":"比赛数据分析",
+			"Event Setup and Format": "比赛规则设置"
 		}
 	}
 }
