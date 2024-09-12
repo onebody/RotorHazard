@@ -1,2 +1,0 @@
-simpleobsws==1.3.*
-asyncio==3.4.*

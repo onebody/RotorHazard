@@ -25,19 +25,19 @@
 	var current_race_data = {};
 	var precalc_laps = {};
 	var min_lap = {{ getOption('MinLapSec') }} * 1000;
-	var min_lap_behavior = {{ getOption('MinLapBehavior') }};
+	var min_lap_behavior = {{ getConfig('TIMING', 'MinLapBehavior') }};
 
 	var start_thresh_lower_amount = 0;
 	var start_thresh_lower_duration = 0;
-	if ('{{ getOption('startThreshLowerAmount') }}' != 'False') {
-		start_thresh_lower_amount = {{ getOption('startThreshLowerAmount') }};
+	if ('{{ getConfig('TIMING', 'startThreshLowerAmount') }}' != 'False') {
+		start_thresh_lower_amount = {{ getConfig('TIMING', 'startThreshLowerAmount') }};
 	}
-	if ('{{ getOption('startThreshLowerDuration') }}' != 'False') {
-		start_thresh_lower_duration = {{ getOption('startThreshLowerDuration') }};
+	if ('{{ getConfig('TIMING', 'startThreshLowerDuration') }}' != 'False') {
+		start_thresh_lower_duration = {{ getConfig('TIMING', 'startThreshLowerDuration') }};
 	}
 
 	$(document).ready(function () {
-		if ('{{ getOption('calibrationMode') }}' == '0') {
+		if ('{{ getConfig('TIMING', 'calibrationMode') }}' == '0') {
 			$('#load-transitions').prop('hidden', false);
 			$('#save-transitions').prop('hidden', false);
 		}
@@ -84,13 +84,23 @@
 
 		$(document).on('change', '.set_ui_option', function (event) {
 			var field = $(this).data('field');
+			var section = $(this).data('section');
 			var value = rhui.getFieldVal(this);
 
-			var data = {
-				option: field,
-				value: value
-			};
-			socket.emit('set_option', data);
+			if (section) {
+				var data = {
+					section: section,
+					key: field,
+					value: value
+				};
+				socket.emit('set_config', data);
+			} else {
+				var data = {
+					option: field,
+					value: value
+				};
+				socket.emit('set_option', data);
+			}
 		});
 
 		var graph_canvas = document.getElementById('race-graph');
@@ -317,7 +327,25 @@
 
 			for (var pilot_i in race_list.heats[heat].rounds[round].pilotraces) {
 				var pilotrace = race_list.heats[heat].rounds[round].pilotraces[pilot_i];
-				$('#selected_pilot').append('<option value="' + pilot_i + '" data-pilot-id="' + pilotrace.pilot_id + '">' + pilotrace.callsign + ' (' + (pilotrace.node_index + 1) + ')</option>');
+				var pilotFreqInfo;
+				if (pilotrace.pilot_freq) {
+					if (pilotrace.pilot_freq.length <= 4) {
+						// if only freq provided then lookup band/channel in table and prepend them
+						var fObj = freq.findByFreq(pilotrace.pilot_freq);
+						if (fObj && fObj.band && fObj.channel) {
+							pilotFreqInfo = " - " + fObj.band + fObj.channel + " " + pilotrace.pilot_freq;
+						} else {
+							pilotFreqInfo = " - " + pilotrace.pilot_freq;
+						}
+					} else {  // if band/channel and freq provided then use them
+						pilotFreqInfo = " - " + pilotrace.pilot_freq;
+					}
+				} else {
+					pilotFreqInfo = ""
+				}
+				$('#selected_pilot').append('<option value="' + pilot_i + '" data-pilot-id="' +
+				        pilotrace.pilot_id + '">' + pilotrace.callsign + ' (' +
+				        (pilotrace.node_index + 1) + ')' + pilotFreqInfo + '</option>');
 			}
 
 			$('#selected_pilot option').each(function(){
@@ -467,7 +495,7 @@
 
 					lapData.append('<td>' + lap_index + '</td>');
 					lapData.append('<td>' + (lap.lap_time_stamp / 1000).toFixed(3) + '</td>');
-					lapData.append('<td>' + formatTimeMillis(lap.lap_time, {{ getOption('timeFormat')|tojson }}) + '</td>');
+					lapData.append('<td>' + formatTimeMillis(lap.lap_time, {{ getConfig('UI', 'timeFormat')|tojson }}) + '</td>');
 					lap_index++;
 				} else {
 					deleted_lap_series.append(lap.crossingStart - 0.001, graph.options.minValue - 10);
@@ -559,7 +587,9 @@
 		}
 
 		$('#enterat').on('input', function (event) {
-			validate_enter();
+			if (Math.abs($('#enterat').val() - current_race_data.enter_at) == 1) {
+				validate_enter();  // handle long press of 'up' button on input widget
+			}
 		});
 
 		$('#enterat').change(function(){
@@ -567,12 +597,16 @@
 		});
 
 		function validate_enter() {
-			var enter_el = $('#enterat');
-			var rssi = enter_el.val();
-
-			enter_el.val(Math.min(rssi, graph.options.maxValue));
-			enter_el.val(Math.max(rssi, graph.options.minValue));
-
+			var rssi = $('#enterat').val();
+			var chk_val = Math.min(rssi, graph.options.maxValue);
+			chk_val = Math.max(chk_val, graph.options.minValue);
+			if (chk_val != rssi) {
+				if (chk_val < current_race_data.exit_at)  {
+					chk_val = current_race_data.exit_at;
+				}
+				rssi = chk_val;
+				$('#enterat').val(rssi);
+			}
 			if (rssi < current_race_data.exit_at)  {
 				current_race_data.exit_at = rssi;
 				$('#exitat').val(rssi);
@@ -588,7 +622,9 @@
 		}
 
 		$('#exitat').on('input', function (event) {
-			validate_exit();
+			if (Math.abs($('#exitat').val() - current_race_data.exit_at) == 1) {
+				validate_exit();  // handle long press of 'down' button on input widget
+			}
 		});
 
 		$('#exitat').change(function(){
@@ -596,12 +632,16 @@
 		});
 
 		function validate_exit() {
-			var exit_el = $('#exitat');
-			var rssi = exit_el.val();
-
-			exit_el.val(Math.min(rssi, graph.options.maxValue));
-			exit_el.val(Math.max(rssi, graph.options.minValue));
-
+			var rssi = $('#exitat').val();
+			var chk_val = Math.min(rssi, graph.options.maxValue);
+			chk_val = Math.max(chk_val, graph.options.minValue);
+			if (chk_val != rssi) {
+				if (chk_val > current_race_data.enter_at)  {
+					chk_val = current_race_data.enter_at;
+				}
+				rssi = chk_val;
+				$('#exitat').val(rssi);
+			}
 			if (rssi > current_race_data.enter_at)  {
 				current_race_data.enter_at = rssi
 				$('#enterat').val(rssi);
@@ -760,7 +800,7 @@
 					lap_index++;
 					var lastLap = lap;
 				} else {
-					lap.lap_time = '-';
+					lap.lap_time = 0;
 					lap.lap_time_formatted = '-';
 				}
 			}

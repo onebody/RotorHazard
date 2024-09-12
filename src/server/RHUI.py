@@ -19,6 +19,9 @@ from Database import ProgramMethod
 import logging
 logger = logging.getLogger(__name__)
 
+from FlaskAppObj import APP
+APP.app_context().push()
+
 class UIFieldType(Enum):
     TEXT = "text"
     BASIC_INT = "basic_int"
@@ -302,7 +305,8 @@ class RHUI():
 
     def emit_priority_message(self, message, interrupt=False, caller=False, **params):
         ''' Emits message to all clients '''
-        if message and re.search(r"[0-z]", message):
+        if message and re.search(r"[0-\udfff]", message):  # don't emit if msg is only whitespace and punctuation
+            logger.debug("Emitting {}: {}".format(("alert" if interrupt else "message"), message))
             emit_payload = {
                 'message': message,
                 'interrupt': interrupt
@@ -528,7 +532,7 @@ class RHUI():
     def emit_start_thresh_lower_amount(self, **params):
         '''Emits current start_thresh_lower_amount.'''
         emit_payload = {
-            'start_thresh_lower_amount': self._racecontext.rhdata.get_optionInt('startThreshLowerAmount'),
+            'start_thresh_lower_amount': self._racecontext.serverconfig.get_item_int('TIMING', 'startThreshLowerAmount'),
         }
         if ('nobroadcast' in params):
             emit('start_thresh_lower_amount', emit_payload)
@@ -538,7 +542,7 @@ class RHUI():
     def emit_start_thresh_lower_duration(self, **params):
         '''Emits current start_thresh_lower_duration.'''
         emit_payload = {
-            'start_thresh_lower_duration': self._racecontext.rhdata.get_optionInt('startThreshLowerDuration'),
+            'start_thresh_lower_duration': self._racecontext.serverconfig.get_item_int('TIMING', 'startThreshLowerDuration'),
         }
         if ('nobroadcast' in params):
             emit('start_thresh_lower_duration', emit_payload)
@@ -563,7 +567,7 @@ class RHUI():
     def emit_language(self, **params):
         '''Emits race status.'''
         emit_payload = {
-                'language': self._racecontext.rhdata.get_option("currentLanguage"),
+                'language': self._racecontext.serverconfig.get_item('UI', 'currentLanguage'),
                 'languages': self._racecontext.language.getLanguages()
             }
         if ('nobroadcast' in params):
@@ -633,7 +637,7 @@ class RHUI():
     def emit_event_actions(self, **params):
         '''Emits event actions.'''
         emit_payload = {
-            'actions': self._racecontext.rhdata.get_option('actions'),
+            'actions': self._racecontext.serverconfig.get_item('USER', 'actions'),
         }
         if ('nobroadcast' in params):
             emit('event_actions', emit_payload)
@@ -644,7 +648,7 @@ class RHUI():
         '''Emits current minimum lap.'''
         emit_payload = {
             'min_lap': self._racecontext.rhdata.get_optionInt('MinLapSec'),
-            'min_lap_behavior': self._racecontext.rhdata.get_optionInt("MinLapBehavior")
+            'min_lap_behavior': self._racecontext.serverconfig.get_item_int('TIMING', 'MinLapBehavior')
         }
         if ('nobroadcast' in params):
             emit('min_lap', emit_payload)
@@ -668,6 +672,7 @@ class RHUI():
 
     def emit_race_list(self, **params):
         '''Emits race listing'''
+        profile_freqs = json.loads(self._racecontext.race.profile.frequencies)
         heats = {}
         for heat in self._racecontext.rhdata.get_heats():
             if self._racecontext.rhdata.savedRaceMetas_has_heat(heat.id):
@@ -686,6 +691,8 @@ class RHUI():
                             'callsign': nodepilot,
                             'pilot_id': pilotrace.pilot_id,
                             'node_index': pilotrace.node_index,
+                            'pilot_freq': self.get_pilot_freq_info(profile_freqs, pilotrace.frequency, \
+                                                                   pilotrace.node_index)
                         })
                     rounds[race.round_id] = {
                         'race_id': race.id,
@@ -945,14 +952,14 @@ class RHUI():
 
             pilots_list.append(pilot_data)
 
-            if self._racecontext.rhdata.get_option('pilotSort') == 'callsign':
+            if self._racecontext.serverconfig.get_item('UI', 'pilotSort') == 'callsign':
                 pilots_list.sort(key=lambda x: (x['callsign'].casefold(), x['name'].casefold()))
             else:
                 pilots_list.sort(key=lambda x: (x['name'].casefold(), x['callsign'].casefold()))
 
         emit_payload = {
             'pilots': pilots_list,
-            'pilotSort': self._racecontext.rhdata.get_option('pilotSort'),
+            'pilotSort': self._racecontext.serverconfig.get_item('UI', 'pilotSort'),
             'attributes': attrs
         }
         if ('nobroadcast' in params):
@@ -1025,7 +1032,7 @@ class RHUI():
     def emit_phonetic_data(self, pilot_id, lap_id, lap_time, team_name, team_laps, leader_flag=False, node_finished=False, node_index=None, **params):
         '''Emits phonetic data.'''
         raw_time = lap_time
-        phonetic_time = RHUtils.phonetictime_format(lap_time, self._racecontext.rhdata.get_option('timeFormatPhonetic'))
+        phonetic_time = RHUtils.phonetictime_format(lap_time, self._racecontext.serverconfig.get_item('UI', 'timeFormatPhonetic'))
 
         emit_payload = {
             'lap': lap_id,
@@ -1125,7 +1132,7 @@ class RHUI():
             pilot = self._racecontext.rhdata.get_pilot(split_data.get('pilot_id', RHUtils.PILOT_ID_NONE))
             phonetic_name = (pilot.phonetic or pilot.callsign) if name_callout_flag and pilot else ''
             split_time = split_data.get('split_time')
-            phonetic_time = RHUtils.phonetictime_format(split_time, self._racecontext.rhdata.get_option('timeFormatPhonetic')) \
+            phonetic_time = RHUtils.phonetictime_format(split_time, self._racecontext.serverconfig.get_item('UI', 'timeFormatPhonetic')) \
                             if (time_callout_flag and split_time) else None
             split_speed = split_data.get('split_speed')
             phonetic_speed = "{:.1f}".format(split_speed) if  (speed_callout_flag and split_speed) else None
@@ -1203,7 +1210,7 @@ class RHUI():
             self._socket.emit('play_beep_tone', emit_payload)
 
     def emit_callouts(self):
-        callouts = self._racecontext.rhdata.get_option('voiceCallouts')
+        callouts = self._racecontext.serverconfig.get_item('USER', 'voiceCallouts')
         if callouts:
             emit('callouts', json.loads(callouts))
 
@@ -1373,3 +1380,14 @@ class RHUI():
 
         emit('race_points_method_list', emit_payload)
 
+    def get_pilot_freq_info(self, profile_freqs, freq_val, node_idx):
+        try:       # if node freq matches then return band/channel and frequency
+            if freq_val == profile_freqs["f"][node_idx]:
+                band = profile_freqs["b"][node_idx]
+                chan = profile_freqs["c"][node_idx]
+                if band and chan:
+                    return "{}{} {}".format(band, chan, freq_val)
+        except:
+            pass
+        # if node freq does not match then just return frequency
+        return "{}".format(freq_val)

@@ -5,6 +5,9 @@ from eventmanager import Evt
 from typing import List
 from RHUI import UIField
 
+from FlaskAppObj import APP
+APP.app_context().push()
+
 class EventActions:
     eventActionsList = []
     effects = {}
@@ -19,8 +22,8 @@ class EventActions:
             })
 
         self.loadActions()
-        self.Events.on(Evt.ALL, 'Actions', self.doActions, {}, 200, True)
-        self.Events.on(Evt.OPTION_SET, 'Actions', self.loadActions, {}, 200, True)
+        self.Events.on(Evt.ALL, 'actions', self.doActions, {}, 200, True)
+        self.Events.on(Evt.CONFIG_SET, 'actions', self.loadActions, {}, 200, True)
 
     def registerEffect(self, effect):
         self.effects[effect.name] = effect
@@ -33,7 +36,7 @@ class EventActions:
         return self.eventActionsList
 
     def loadActions(self, _args=None):
-        actionSetting = self._racecontext.rhdata.get_option('actions')
+        actionSetting = self._racecontext.serverconfig.get_item('USER', 'actions')
         if actionSetting:
             try:
                 self.eventActionsList = json.loads(actionSetting)
@@ -45,7 +48,7 @@ class EventActions:
     def addEventAction(self, event, effect, text):
         item = { 'event': event, 'effect': effect, 'text': text }
         self.eventActionsList.append(item)
-        self._racecontext.rhdata.set_option('actions', json.dumps(self.eventActionsList))
+        self._racecontext.serverconfig.set_item('USER', 'actions', json.dumps(self.eventActionsList))
 
     def containsAction(self, event):
         for item in self.eventActionsList:
@@ -77,5 +80,6 @@ class ActionEffect():
 
     @catchLogExceptionsWrapper
     def runEffect(self, action, args):
+        APP.app_context().push()
         self.effect_fn(action, args)
 
