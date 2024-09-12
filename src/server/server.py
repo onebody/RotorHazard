@@ -477,6 +477,67 @@ def render_stream_heat(heat_id):
         heat_id=heat_id
     )
 
+
+# 
+# author by:onebody
+# author_uri: "https://github.com/onebody",
+# overlays 风格的 OSD显示
+# 参考：https://github.com/dutchdronesquad/rh-stream-overlays
+
+@APP.route("/stream/ol/<string:name>/node/<int:node_id>")
+def render_node_overlay(name: str,node_id: int):
+    """Render the node overlay."""
+    return render_template(
+        f"stream/nodes/node_{name}.html",
+        serverInfo=RaceContext.serverstate.template_info_dict,
+        getOption=RaceContext.rhdata.get_option,
+        getConfig=RaceContext.serverconfig.get_item,
+        __=__,
+        node_id=node_id - 1,
+        stream_overlays_static='/static/stream_overlays/static',
+    )
+
+@APP.route("/stream/ol/<string:name>/topbar")
+def render_topbar_overlay(name: str):
+    """Render the topbar overlay."""
+    return render_template(
+        f"stream/topbars/topbar_{name}.html",
+        serverInfo=RaceContext.serverstate.template_info_dict,
+        getOption=RaceContext.rhdata.get_option,
+        getConfig=RaceContext.serverconfig.get_item,
+        __=__,
+        stream_overlays_static='/static/stream_overlays/static',
+    )
+
+@APP.route("/stream/ol/<string:name>/leaderboard/<int:class_id>/overall")
+def render_overall_class_overlay(name: str, class_id: int):
+    """Render the overall class leaderboard overlay."""
+    return render_template(
+        f"stream/leaderboard/{name}/overall.html",
+        serverInfo=RaceContext.serverstate.template_info_dict,
+        getOption=RaceContext.rhdata.get_option,
+        getConfig=RaceContext.serverconfig.get_item,
+        __=__,
+        stream_overlays_static='/static/stream_overlays/static',
+        class_id=class_id,
+    )
+
+
+@APP.route("/stream/ol/<string:name>/leaderboard/<int:class_id>/class")
+def render_class_leaderboard_overlay(name: str, class_id: int):
+    """Render the class leaderboard overlay."""
+    return render_template(
+        f"stream/leaderboard/{name}/class.html",
+        serverInfo=RaceContext.serverstate.template_info_dict,
+        getOption=RaceContext.rhdata.get_option,
+        getConfig=RaceContext.serverconfig.get_item,
+        __=__,
+        stream_overlays_static='/static/stream_overlays/static',
+        class_id=class_id,
+    )
+
+
+
 @APP.route('/scanner')
 @requires_auth
 def render_scanner():
