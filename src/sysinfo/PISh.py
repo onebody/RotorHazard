@@ -66,9 +66,9 @@ def  displayInfo(disp=None):
     try:
         # 调用函数读取 ADMINUSERNAME 和 ADMIN_PASSWORD 的值
 
-        userId = json_data['GENERAL']['ADMIN_USERNAME']
+        userId = json_data['SECRETS']['ADMIN_USERNAME']
         logging.info("userId: " + userId)
-        userPwd = json_data['GENERAL']['ADMIN_PASSWORD']
+        userPwd = json_data['SECRETS']['ADMIN_PASSWORD']
         logging.info("userPwd: " + userPwd)
 
     except json.JSONDecodeError as e:
