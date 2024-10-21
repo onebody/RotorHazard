@@ -11,6 +11,7 @@ from datetime import datetime
 from flask import request, copy_current_request_context
 from time import monotonic
 from eventmanager import Evt
+from filtermanager import Flt
 from util.InvokeFuncQueue import InvokeFuncQueue
 from RHUtils import catchLogExceptionsWrapper
 from led_event_manager import ColorVal
@@ -25,6 +26,7 @@ class RHRace():
     def __init__(self, racecontext):
         # internal references
         self._racecontext = racecontext
+        self._filters = racecontext.filters
         self.__ = self._racecontext.language.__
         # setup/options
         self.num_nodes = 0
@@ -90,6 +92,7 @@ class RHRace():
 
     @catchLogExceptionsWrapper
     def stage(self, data=None):
+        data = self._filters.run_filters(Flt.RACE_STAGE, data)
 
         with self._racecontext.rhdata.get_db_session_handle():  # make sure DB session/connection is cleaned up
 
@@ -847,6 +850,7 @@ class RHRace():
             self.set_node_finished_flag(done_node_obj.index)
         self.check_win_condition(**kwargs)  # check for and announce possible winner
         if self.win_status != WinStatus.PENDING_CROSSING:  # if not waiting for crossings to finish
+            any_done_flag = False
             if pilot_done_flag and not prev_node_finished_flag:  # if pilot just finished race
                 logger.info('Pilot {} done'.format(done_pilot_obj.callsign if done_pilot_obj else done_node_obj.index))
                 self._racecontext.events.trigger(Evt.RACE_PILOT_DONE, {
@@ -856,6 +860,7 @@ class RHRace():
                     'results': self.get_results(),
                 })
                 self.set_node_finished_effect_flag(done_node_obj.index)  # indicate pilot-finished event was triggered
+                any_done_flag = True
             # check if any pilot-finished events were waiting for crossings to finish, and trigger them now if so
             if self.win_status == WinStatus.DECLARED and self.node_fin_effect_wait_count > 0:
                 for chk_node in self._racecontext.interface.nodes:
@@ -872,10 +877,27 @@ class RHRace():
                         })
                         self.set_node_finished_effect_flag(chk_node.index)  # indicate pilot-finished event was triggered
                         self.node_fin_effect_wait_count -= 1
+                        any_done_flag = True
+            if any_done_flag:
+                gevent.spawn(self.update_leaderboard_after_done)
         elif pilot_done_flag and not prev_node_finished_flag:  # if pilot just finished race
             self.node_fin_effect_wait_count += 1
             logger.debug('Waiting to process node {} done until all crossings completed'.format(done_node_obj.index+1))
 
+    # update leaderboard to reflect pilot just finished (done)
+    @catchLogExceptionsWrapper
+    def update_leaderboard_after_done(self):
+        gevent.sleep(0.001)
+        wait_count = 0  # if 'calc_leaderboard_fn' in progress then let it finish
+        while Results.is_in_calc_leaderboard_fn():
+            gevent.sleep(0.01)
+            wait_count += 1
+            if wait_count > 1000:  # timeout after 10 seconds
+                logger.error("update_leaderboard_after_done: Timeout waiting for invocation of 'calc_leaderboard()' to finish{}")
+                break
+        self.clear_results()
+        self._racecontext.rhui.emit_current_laps() # update all laps on the race page
+        self._racecontext.rhui.emit_current_leaderboard() # generate and update leaderboard
 
     @catchLogExceptionsWrapper
     def delete_lap(self, data):
@@ -1385,18 +1407,21 @@ class RHRace():
         return build
 
     def set_lap_results(self, token, lap_results):
+        lap_results = self._filters.run_filters(Flt.LAPS_SAVE, lap_results)
         if self.lap_cacheStatus['data_ver'] == token:
             self.lap_cacheStatus['build_ver'] = token
             self.lap_results = lap_results
         return True
 
     def set_results(self, token, results):
+        results = self._filters.run_filters(Flt.RACE_RESULTS, results)
         if self.cacheStatus['data_ver'] == token:
             self.cacheStatus['build_ver'] = token
             self.results = results
         return True
 
     def set_team_results(self, token, results):
+        results = self._filters.run_filters(Flt.RACE_TEAM_RESULTS, results)
         if self.team_cacheStatus['data_ver'] == token:
             self.team_cacheStatus['build_ver'] = token
             self.team_results = results
@@ -1466,20 +1491,11 @@ class RHRace():
             practice_flag = False
 
         if mode == 0:
-            seatColorOpt = self._racecontext.serverconfig.get_item_int('LED', 'seatColors', False)
+            seatColorOpt = self._racecontext.serverconfig.get_item('LED', 'seatColors')
             if seatColorOpt:
-                seatColors = json.loads(seatColorOpt)
+                seatColors = seatColorOpt
             else:
-                seatColors = [
-                    "#0022ff", # Blue
-                    "#ff5500", # Orange
-                    "#00ff22", # Green
-                    "#ff0055", # Magenta
-                    "#ddff00", # Yellow
-                    "#7700ff", # Purple
-                    "#00ffdd", # Teal
-                    "#aaaaaa", # White
-                ]
+                seatColors = self._racecontext.serverstate.seat_color_defaults
         elif mode == 2:
             profile_freqs = json.loads(self.profile.frequencies)
 
@@ -1612,10 +1628,16 @@ class RHRace():
             logger.exception("Error checking/creating heat for secondary format")
 
     def set_heat(self, new_heat_id, silent=False, force=False): #set_current_heat_data
+        new_heat_id = self._filters.run_filters(Flt.RACE_SET_HEAT, new_heat_id)
+
         logger.info('Setting current heat to Heat {0}'.format(new_heat_id))
 
         if force:
             self.finalize_heat_set(new_heat_id)
+
+        heat = self._racecontext.rhdata.get_heat(new_heat_id)
+        if heat and not heat.active:
+            self.finalize_heat_set(RHUtils.HEAT_ID_NONE)
 
         result = self._racecontext.heatautomator.calc_heat(new_heat_id, silent)
 

@@ -1,9 +1,11 @@
 '''Primary Race management class'''
 
+import copy
 import Config
 import RHRace
 import RHTimeFns
 import logging
+from led_event_manager import NoLEDManager
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +26,10 @@ class RaceContext():
         self.language = None
 
         self.events = None
+        self.filters = None
         self.rhui = None
 
-        self.led_manager = None
+        self.led_manager = NoLEDManager()
         self.vrx_manager = None
         self.export_manager = None
         self.import_manager = None
@@ -260,6 +263,25 @@ class ServerState:
     def monotonic_to_epoch_millis(self, secs):
         return 1000.0*secs + self.mtonic_to_epoch_millis_offset
 
+    # SERVER GLOBALS
+
     # race format used in secondary mode (must be initialized after database)
     secondary_race_format = None
 
+    _seat_color_defaults = [
+        "#0022ff",  # Blue
+        "#ff5500",  # Orange
+        "#00ff22",  # Green
+        "#ff0055",  # Magenta
+        "#ddff00",  # Yellow
+        "#7700ff",  # Purple
+        "#00ffdd",  # Teal
+        "#aaaaaa",  # White
+    ]
+
+    @property
+    def seat_color_defaults(self):
+        return copy.copy(self._seat_color_defaults)
+
+    # enable processing of Evt.ALL events when Evt.HEARTBEAT is triggered
+    enable_heartbeat_event = False

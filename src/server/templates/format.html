@@ -1,6 +1,7 @@
 {% extends "layout.html" %} {% block title %}{{ __('Format') }}{% endblock %} {% block head %}
 <script type="text/javascript" src="./static/Blob.js"></script>
 <script type="text/javascript" src="./static/FileSaver.min.js"></script>
+<script type="text/javascript" src="{{ url_for('static', filename='showdown-1.9.1/showdown.min.js') }}"></script>
 
 <script type="text/javascript" charset="utf-8">
 	// TODO: UI for heat order
@@ -15,6 +16,7 @@
 		},
 		'frequency_data',
 		'pilot_data',
+		'seat_data',
 		'heat_data',
 		'class_data',
 		'format_data',
@@ -61,12 +63,16 @@
 		rotorhazard.saveData();
 		$('nav li').removeClass('admin-hide');
 
-		if ('{{ getOption('pilotSort') }}' == 'callsign') {
+		// Set pilot sort order for select box
+		if ('{{ getConfig("UI", "pilotSort") }}' == 'callsign') {
 			$('#set_pilotSort').val('callsign');
+		} else if ('{{ getConfig("UI", "pilotSort") }}' == 'id') {
+			$('#set_pilotSort').val('id');
 		}
 
 		if (parseInt('{{ getConfig('LED', 'ledColorMode') }}')) {
 			$('#set_ledColorMode').val('{{ getConfig('LED', 'ledColorMode') }}');
+			display_seat_color_ui();
 		}
 
 		$('#unlock_race_format_button').html(svg_asset.lock);
@@ -75,6 +81,15 @@
 		for (var i = 0; i < {{ num_nodes }}; i++) {
 			rotorhazard.nodes[i] = new nodeModel();
 		}
+
+		// set up markdown converter
+		var panel_converter = new showdown.Converter({
+			ghCodeBlocks: true,
+			ghCompatibleHeaderId: true,
+			literalMidWordUnderscores: true,
+			simpleLineBreaks: true,
+			headerLevelStart: 3
+		});
 
 		socket.on('ui', function (msg) {
 			if (msg.page == 'format') {
@@ -88,7 +103,23 @@
 					var panel_header_el = $('<div class="panel-header">');
 					panel_header_el.append('<h2><button class="no-style">' + panel.panel.label + '</button></h2>');
 					var panel_content_el = $('<div class="panel-content">');
-					panel_content_el.hide();
+
+					// panel open/close
+					if (panel.panel.open) {
+						panel_el.addClass('open');
+						panel_content_el.show();
+					} else {
+						panel_el.removeClass('open');
+						panel_content_el.hide();
+					}
+
+					// add markdown content
+					for (var md_idx in panel.markdowns) {
+						md_content = panel.markdowns[md_idx].desc;
+						md_output = panel_converter.makeHtml(md_content);
+						md_element = $('<div class="ui-md-el">').html(md_output);
+						panel_content_el.append(md_element);
+					}
 
 					var form_el = $('<ol class="form">');
 
@@ -285,9 +316,9 @@
 						el.append(header);
 
 						var locked = race_class.locked;
-						var active = false;
+						var active_race = false;
 						if (rotorhazard.event.race_status && rotorhazard.event.race_status.race_status && rotorhazard.event.race_status.race_class_id == race_class.id) {
-							active = true;
+							active_race = true;
 							locked = true;
 						}
 
@@ -298,7 +329,7 @@
 						var actions = $('<div class="actions">');
 						actions.append('<button class="duplicate duplicate_class" data-id="' + race_class.id + '" title="Duplicate ' + race_class.displayname + '">+</button>');
 						if (locked) {
-							if (!active) {
+							if (!active_race) {
 								actions.append('<button class="btn-warning open-mfp-popup unlock unlock_class" data-mfp-src="#class_unlock_confirm" data-id="' + race_class.id + '" title="' + __('Force Modify class') + ': ' + race_class.displayname + '">' + svg_asset.lock + '</button>');
 							}
 						} else {
@@ -632,9 +663,9 @@
 			}
 
 			var locked = heat.locked;
-			var active = false
+			var active_race = false
 			if (rotorhazard.event.race_status && rotorhazard.event.race_status.race_status && rotorhazard.event.race_status.race_heat_id == heat.id) {
-				active = true;
+				active_race = true;
 				locked = true;
 			}
 
@@ -648,7 +679,13 @@
 			var actions = $('<div class="actions">');
 			actions.append('<button class="duplicate_heat" data-id="' + heat.id + '" title="' + __('Duplicate Heat') + ': ' + heat.displayname + '">+</button>');
 			if (locked) {
-				if (!active) {
+				if (heat.active) {
+					actions.prepend('<button class="deactivate_heat eye-icon" data-id="' + heat.id + '" title="' + __('Deactivate Heat') + ': ' + heat.displayname + '">' + svg_asset.eye_visible + '</button>');
+				} else {
+					actions.prepend('<button class="activate_heat eye-icon" data-id="' + heat.id + '" title="' + __('Activate Heat') + ': ' + heat.displayname + '">' + svg_asset.eye_invisible + '</button>');
+				}
+
+				if (!active_race) {
 					actions.append('<button class="btn-warning open-mfp-popup unlock unlock_heat" data-mfp-src="#heat_unlock_confirm" data-id="' + heat.id + '" title="' + __('Force Modify Heat') + ': ' + heat.displayname + '">' + svg_asset.lock + '</button>');
 				}
 			} else {
@@ -1190,6 +1227,20 @@
 			socket.emit('duplicate_heat', data);
 		});
 
+		$(document).on("click", '.deactivate_heat', function (event) {
+			var data = {
+				heat: parseInt($(this).data('id')),
+			};
+			socket.emit('deactivate_heat', data);
+		});
+
+		$(document).on("click", '.activate_heat', function (event) {
+			var data = {
+				heat: parseInt($(this).data('id')),
+			};
+			socket.emit('activate_heat', data);
+		});
+
 		/* Pilots */
 		socket.on('pilot_data', function (msg) {
 			rotorhazard.event.pilot_attributes = msg.attributes;
@@ -1198,6 +1249,8 @@
 
 			if (rotorhazard.options.pilotSort == 'callsign') {
 				rotorhazard.event.pilots.sort((a, b) => a.callsign.localeCompare(b.callsign, undefined, {sensitivity: 'base'}));
+			} else if (rotorhazard.options.pilotSort == 'id') {
+				rotorhazard.event.pilots.sort((a, b) => a.pilot_id - b.pilot_id);
 			} else {
 				rotorhazard.event.pilots.sort((a, b) => a.name.localeCompare(b.name, undefined, {sensitivity: 'base'}));
 			}
@@ -1309,8 +1362,7 @@
 			pilot_id = parseInt($(event.target).data('pilot_id'));
 			src_hexcolor = $(event.target).data('color');
 
-			color_picker(src_hexcolor, function(h, s, l){
-				hexcolor = hslToHex(h, s, l)
+			color_picker(src_hexcolor, function(hexcolor){
 				var data = {
 					pilot_id: pilot_id,
 					color: hexcolor
@@ -1379,6 +1431,52 @@
 				pilot: parseInt($(this).data('id')),
 			};
 			socket.emit('delete_pilot', data);
+		});
+
+		/* Color */
+
+		function display_seat_color_ui() {
+			mode = $('#set_ledColorMode').val()
+			$('#seat-colors').prop('hidden', mode != 0);
+		}
+
+		$(document).on("click", '#set_ledColorMode', function (event) {
+			display_seat_color_ui();
+		});
+
+		socket.on('seat_data', function (msg) {
+			rotorhazard.event.seats = msg.seats;
+			display_seat_colors();
+		});
+
+		function display_seat_colors() {
+			if (rotorhazard.event.seats) {
+				var seat_color_el = $('#seat-colors');
+				seat_color_el.empty();
+				for (var i = 0; i < rotorhazard.event.seats.length; i++) {
+					var seat = rotorhazard.event.seats[i];
+					seat_color_el.append('<button class="set_seat_color color-picker" id="seatcolor_' + seat.seat_id + '" data-seat_id="' + seat.seat_id + '" data-color="' + seat.color + '" style="background-color:' + seat.color + '">');
+				}
+				seat_color_el.append('<button id="reset-seat-color">' + __('Reset') + '</button>');
+			}
+		}
+
+		$(document).on("click", '.set_seat_color', function (event) {
+			seat_id = parseInt($(event.target).data('seat_id'));
+			src_hexcolor = $(event.target).data('color');
+
+			color_picker(src_hexcolor, function(hexcolor){
+				var data = {
+					seat_id: seat_id,
+					color: hexcolor
+				};
+				socket.emit('set_seat_color', data);
+				$('#seatcolor_' + seat_id).data('color', hexcolor).css('background-color', hexcolor);
+			})
+		});
+
+		$(document).on("click", '#reset-seat-color', function (event) {
+			socket.emit('reset_seat_color');
 		});
 
 		/* Race Format */
@@ -2166,6 +2264,8 @@
 			rotorhazard.options.pilotSort = $(this).val();
 			if (rotorhazard.options.pilotSort == 'callsign') {
 				rotorhazard.event.pilots.sort((a, b) => a.callsign.localeCompare(b.callsign, undefined, {sensitivity: 'base'}));
+			} else if (rotorhazard.options.pilotSort == 'id') {
+				rotorhazard.event.pilots.sort((a, b) => a.pilot_id - b.pilot_id);
 			} else {
 				rotorhazard.event.pilots.sort((a, b) => a.name.localeCompare(b.name, undefined, {sensitivity: 'base'}));
 			}
@@ -2365,6 +2465,7 @@
 				<select id="set_pilotSort" class="set-config" data-section="UI" data-key="pilotSort">
 					<option value="name">{{ __('Name') }}</option>
 					<option value="callsign">{{ __('Callsign') }}</option>
+					<option value="id">{{ __('ID') }}</option>
 				</select>
 			</li>
 			<li>
@@ -2378,6 +2479,8 @@
 				</select>
 			</li>
 		</ol>
+
+		<div class="control-set" id="seat-colors"></div>
 
 		<ul class="pilots">
 			<li>{{ __('Loading...') }}</li>

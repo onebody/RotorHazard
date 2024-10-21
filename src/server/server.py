@@ -1,5 +1,5 @@
 '''RotorHazard server script'''
-RELEASE_VERSION = "4.1.1" # Public release version code
+RELEASE_VERSION = "4.2.0-beta.1" # Public release version code
 SERVER_API = 44 # Server API version
 NODE_API_SUPPORTED = 18 # Minimum supported node version
 NODE_API_BEST = 35 # Most recent node API
@@ -94,6 +94,9 @@ import util.stm32loader as stm32loader
 # Events manager
 from eventmanager import Evt, EventManager
 
+# Filter manager
+from filtermanager import Flt, FilterManager
+
 # LED imports
 from led_event_manager import LEDEventManager, NoLEDManager, ClusterLEDManager, LEDEvent, Color, ColorVal, ColorPattern
 
@@ -118,8 +121,10 @@ RaceContext.serverstate.program_start_mtonic = _program_start_mtonic
 RaceContext.serverstate.mtonic_to_epoch_millis_offset = RaceContext.serverstate.program_start_epoch_time - \
                                                         1000.0*RaceContext.serverstate.program_start_mtonic
 
-Events = EventManager(RHAPI)
+Events = EventManager(RaceContext)
 RaceContext.events = Events
+Filters = FilterManager(RHAPI)
+RaceContext.filters = Filters
 EventActionsObj = None
 
 HEARTBEAT_THREAD = None
@@ -335,30 +340,6 @@ def render_results():
     '''Route to round summary page.'''
     return render_template('results.html', serverInfo=RaceContext.serverstate.template_info_dict, getOption=RaceContext.rhdata.get_option, getConfig=RaceContext.serverconfig.get_item, __=__, Debug=RaceContext.serverconfig.get_item('GENERAL', 'DEBUG'))
 
-
-# author by:onebody
-# author_uri: "https://github.com/onebody",
-# 单独节点显示
-@APP.route('/runone/node/<int:node_id>')
-def render_runone_node(node_id):
-    '''比赛时单独节点 显示页面'''
-    frequencies = [node.frequency for node in RaceContext.interface.nodes]
-    nodes = []
-    for idx, freq in enumerate(frequencies):
-        if freq:
-            nodes.append({
-                'freq': freq,
-                'index': idx
-            })
-
-    return render_template('runone.html', serverInfo=RaceContext.serverstate.template_info_dict, getOption=RaceContext.rhdata.get_option, __=__,
-        led_enabled=(RaceContext.led_manager.isEnabled() or (RaceContext.cluster and RaceContext.cluster.hasRecEventsSecondaries())),
-        vrx_enabled=RaceContext.vrx_manager.isEnabled(),
-        num_nodes=RaceContext.race.num_nodes,
-        nodes=nodes,
-        node_id=node_id-1,
-        cluster_has_secondaries=(RaceContext.cluster and RaceContext.cluster.hasSecondaries()))
-
 @APP.route('/run')
 @requires_auth
 def render_run():
@@ -378,6 +359,38 @@ def render_run():
         num_nodes=RaceContext.race.num_nodes,
         nodes=nodes,
         cluster_has_secondaries=(RaceContext.cluster and RaceContext.cluster.hasSecondaries()))
+
+
+# author by:onebody
+# author_uri: "https://github.com/onebody",
+# 单独节点显示
+@APP.route("/runone/node/<int:node_id>")
+def render_runone_node(node_id):
+    """比赛时单独节点 显示页面"""
+    frequencies = [node.frequency for node in RaceContext.interface.nodes]
+    nodes = []
+    for idx, freq in enumerate(frequencies):
+        if freq:
+            nodes.append({"freq": freq, "index": idx})
+
+    return render_template(
+        "runone.html",
+        serverInfo=RaceContext.serverstate.template_info_dict,
+        getOption=RaceContext.rhdata.get_option,
+        __=__,
+        led_enabled=(
+            RaceContext.led_manager.isEnabled()
+            or (RaceContext.cluster and RaceContext.cluster.hasRecEventsSecondaries())
+        ),
+        vrx_enabled=RaceContext.vrx_manager.isEnabled(),
+        num_nodes=RaceContext.race.num_nodes,
+        nodes=nodes,
+        node_id=node_id - 1,
+        cluster_has_secondaries=(
+            RaceContext.cluster and RaceContext.cluster.hasSecondaries()
+        ),
+    )
+
 
 @APP.route('/current')
 def render_current():
@@ -478,7 +491,7 @@ def render_stream_heat(heat_id):
     )
 
 
-# 
+#
 # author by:onebody
 # author_uri: "https://github.com/onebody",
 # overlays 风格的 OSD显示
@@ -535,7 +548,6 @@ def render_class_leaderboard_overlay(name: str, class_id: int):
         stream_overlays_static='/static/stream_overlays/static',
         class_id=class_id,
     )
-
 
 
 @APP.route('/scanner')
@@ -834,6 +846,8 @@ def on_load_data(data):
                 heartbeat_thread_function.imdtabler_flag = True
         elif load_type == 'heat_data':
             RaceContext.rhui.emit_heat_data(nobroadcast=True)
+        elif load_type == 'seat_data':
+            RaceContext.rhui.emit_seat_data(nobroadcast=True)
         elif load_type == 'class_data':
             RaceContext.rhui.emit_class_data(nobroadcast=True)
         elif load_type == 'format_data':
@@ -1142,6 +1156,24 @@ def on_duplicate_heat(data):
     RaceContext.rhdata.duplicate_heat(data['heat'])
     RaceContext.rhui.emit_heat_data()
 
+@SOCKET_IO.on('deactivate_heat')
+@catchLogExcWithDBWrapper
+def on_deactivate_heat(data):
+    RaceContext.rhdata.alter_heat({
+        'heat': data['heat'],
+        'active': False
+    })
+    RaceContext.rhui.emit_heat_data()
+
+@SOCKET_IO.on('activate_heat')
+@catchLogExcWithDBWrapper
+def on_activate_heat(data):
+    RaceContext.rhdata.alter_heat({
+        'heat': data['heat'],
+        'active': True
+    })
+    RaceContext.rhui.emit_heat_data()
+
 @SOCKET_IO.on('alter_heat')
 @catchLogExcWithDBWrapper
 def on_alter_heat(data):
@@ -1246,6 +1278,47 @@ def on_delete_pilot(data):
     if result:
         RaceContext.rhui.emit_pilot_data()
         RaceContext.rhui.emit_heat_data()
+
+@SOCKET_IO.on('set_seat_color')
+@catchLogExcWithDBWrapper
+def on_set_seat_color(data):
+    '''Update seat color.'''
+    seat_id = data['seat_id']
+    color = data['color']
+
+    seat_color_opt = RaceContext.serverconfig.get_item('LED', 'seatColors')
+    if seat_color_opt:
+        seat_colors = seat_color_opt
+    else:
+        seat_colors = RaceContext.serverstate.seat_color_defaults
+
+    seat_colors[seat_id] = color
+
+    RaceContext.serverconfig.set_item('LED', 'seatColors', seat_colors)
+    RaceContext.race.updateSeatColors()
+    RaceContext.rhui.emit_pilot_data()
+    RaceContext.rhui.emit_seat_data()
+
+    Events.trigger(Evt.CONFIG_SET, {
+        'section': 'LED',
+        'key': 'seatColors',
+        'value': seat_colors,
+        })
+
+@SOCKET_IO.on('reset_seat_color')
+@catchLogExcWithDBWrapper
+def on_reset_seat_color():
+    '''Update seat color.'''
+    RaceContext.serverconfig.set_item('LED', 'seatColors', [])
+    RaceContext.race.updateSeatColors()
+    RaceContext.rhui.emit_pilot_data()
+    RaceContext.rhui.emit_seat_data()
+
+    Events.trigger(Evt.CONFIG_SET, {
+        'section': 'LED',
+        'key': 'seatColors',
+        'value': [],
+        })
 
 @SOCKET_IO.on('add_profile')
 @catchLogExcWithDBWrapper
@@ -2380,7 +2453,7 @@ def set_vrx_node(data):
     vrx_id = data['vrx_id']
     node = data['node']
 
-    if RaceContext.vrx_manager.isEnabled():
+    if RaceContext.vrx_manager and RaceContext.vrx_manager.isEnabled():
         # TODO: RaceContext.vrx_manager.setDeviceMethod(device_id, method)
         # TODO: RaceContext.vrx_manager.setDevicePilot(device_id, pilot_id)
 
@@ -2422,6 +2495,11 @@ def heartbeat_thread_function():
             SOCKET_IO.emit('heartbeat', node_data)
             heartbeat_thread_function.iter_tracker += 1
 
+            if RaceContext.serverstate.enable_heartbeat_event:
+                Events.trigger(Evt.HEARTBEAT, {
+                    'count': heartbeat_thread_function.iter_tracker
+                })
+
             # update displayed IMD rating after freqs changed:
             if heartbeat_thread_function.imdtabler_flag and \
                     (heartbeat_thread_function.iter_tracker % HEARTBEAT_DATA_RATE_FACTOR) == 0:
@@ -2438,12 +2516,12 @@ def heartbeat_thread_function():
 
             # collect vrx lock status
             if (heartbeat_thread_function.iter_tracker % (10*HEARTBEAT_DATA_RATE_FACTOR)) == 0:
-                if RaceContext.vrx_manager.isEnabled():
+                if RaceContext.vrx_manager and RaceContext.vrx_manager.isEnabled():
                     RaceContext.vrx_manager.updateStatus()
 
             if (heartbeat_thread_function.iter_tracker % (10*HEARTBEAT_DATA_RATE_FACTOR)) == 4:
                 # emit display status with offset
-                if RaceContext.vrx_manager.isEnabled():
+                if RaceContext.vrx_manager and RaceContext.vrx_manager.isEnabled():
                     RaceContext.rhui.emit_vrx_list()
 
             # emit environment data less often:
@@ -3022,19 +3100,6 @@ def load_plugin(plugin):
     except:
         logger.info('No plugin metadata found for {}'.format(plugin.name))
 
-    try:
-        plugin.module = importlib.import_module('plugins.' + plugin.name)
-        if not plugin.module.__file__:
-            plugin.load_issue = "unable to load file"
-            return False
-    except ModuleNotFoundError as ex1:
-        plugin.load_issue = str(ex1)
-        return False
-    except Exception as ex2:
-        plugin.load_issue = "not supported or may require additional dependencies"
-        plugin.load_issue_detail = ex2
-        return False
-
     version_major = 1
     version_minor = 0
 
@@ -3052,6 +3117,19 @@ def load_plugin(plugin):
 
     if version_major == RHAPI.API_VERSION_MAJOR and version_minor > RHAPI.API_VERSION_MINOR:
         plugin.load_issue = "required RHAPI version is newer than this server"
+        return False
+
+    try:
+        plugin.module = importlib.import_module('plugins.' + plugin.name)
+        if not plugin.module.__file__:
+            plugin.load_issue = "unable to load file"
+            return False
+    except ModuleNotFoundError as ex1:
+        plugin.load_issue = str(ex1)
+        return False
+    except Exception as ex2:
+        plugin.load_issue = "not supported or may require additional dependencies"
+        plugin.load_issue_detail = ex2
         return False
 
     if 'initialize' not in dir(plugin.module) or not callable(getattr(plugin.module, 'initialize')):

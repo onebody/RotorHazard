@@ -1,6 +1,7 @@
 {% extends "layout.html" %} {% block title %}{{ __('Run') }}{% endblock %}{% block head %}
 <script type="text/javascript" src="./static/Blob.js"></script>
 <script type="text/javascript" src="./static/FileSaver.min.js"></script>
+<script type="text/javascript" src="{{ url_for('static', filename='showdown-1.9.1/showdown.min.js') }}"></script>
 
 <script type="text/javascript" charset="utf-8">
 	var data_dependencies = [
@@ -242,6 +243,15 @@
 			$('.rssi-graph').prop('hidden', true);
 		}
 
+		// set up markdown converter
+		var panel_converter = new showdown.Converter({
+			ghCodeBlocks: true,
+			ghCompatibleHeaderId: true,
+			literalMidWordUnderscores: true,
+			simpleLineBreaks: true,
+			headerLevelStart: 3
+		});
+
 		socket.on('ui', function (msg) {
 			if (msg.page == 'run') {
 				$('#custom-ui').empty();
@@ -254,7 +264,23 @@
 					var panel_header_el = $('<div class="panel-header">');
 					panel_header_el.append('<h2><button class="no-style">' + panel.panel.label + '</button></h2>');
 					var panel_content_el = $('<div class="panel-content">');
-					panel_content_el.hide();
+
+					// panel open/close
+					if (panel.panel.open) {
+						panel_el.addClass('open');
+						panel_content_el.show();
+					} else {
+						panel_el.removeClass('open');
+						panel_content_el.hide();
+					}
+
+					// add markdown content
+					for (var md_idx in panel.markdowns) {
+						md_content = panel.markdowns[md_idx].desc;
+						md_output = panel_converter.makeHtml(md_content);
+						md_element = $('<div class="ui-md-el">').html(md_output);
+						panel_content_el.append(md_element);
+					}
 
 					var form_el = $('<ol class="form">');
 
@@ -531,12 +557,14 @@
 				var single_class = true;
 				for (var h in rotorhazard.event.heats) {
 					var heat = rotorhazard.event.heats[h];
-					if (!(heat.class_id in heats_by_class)) {
-						heats_by_class[heat.class_id] = [];
-					}
-					heats_by_class[heat.class_id].push(heat)
-					if (heat.class_id != 0) {
-						single_class = false;
+					if (heat.active) {
+						if (!(heat.class_id in heats_by_class)) {
+							heats_by_class[heat.class_id] = [];
+						}
+						heats_by_class[heat.class_id].push(heat)
+						if (heat.class_id != 0) {
+							single_class = false;
+						}
 					}
 				}
 
@@ -926,12 +954,14 @@
 			$('.race_status_message').html(race.status_msg);
 		});
 
-		function callout_current_leader(pilot_phonetic, play_tone_flag) {
+		function callout_current_leader(pilot_phonetic, separate_call_flag) {
 			if (!rotorhazard.winner_declared_flag) {
-				if (play_tone_flag && rotorhazard.beep_race_leader_lap) {
-					speak(LEADER_FLAG_CHAR);
+				speak(('<div class="speech">' + pilot_phonetic + " " + __l('is leading') + '</div>'),
+						separate_call_flag);
+				// do 'speak()' for leader tone second because "priority=true" reverses order
+				if (separate_call_flag && rotorhazard.beep_race_leader_lap) {
+					speak(LEADER_FLAG_CHAR, separate_call_flag);
 				}
-				speak('<div class="speech">' + pilot_phonetic + " " + __l('is leading') + '</div>');
 			}
 		}
 
@@ -1807,8 +1837,7 @@
 		$(document).on("click", '#set_led_color', function (event) {
 			src_hexcolor = rgbtoHex($(event.target).css('background-color'));
 
-			color_picker(src_hexcolor, function(h, s, l){
-				hexcolor = hslToHex(h, s, l);
+			color_picker(src_hexcolor, function(hexcolor){
 				$(event.target).css('background-color', hexcolor);
 			})
 		})
@@ -1908,6 +1937,21 @@
 
 		$('#add_callout').click(function (event) {
 			add_callout();
+			$('#btn_node_0').click(function (event) {
+				window.location.href = "/runone/node/1";
+			});
+		
+			$('#btn_node_1').click(function (event) {
+				window.location.href = "/runone/node/2";
+			});
+			
+			$('#btn_node_2').click(function (event) {
+				window.location.href = "/runone/node/3";
+			});
+			
+			$('#btn_node_3').click(function (event) {
+				window.location.href = "/runone/node/4";
+			});
 		});
 
 		$(document).on('click', '.play_callout', function (event) {

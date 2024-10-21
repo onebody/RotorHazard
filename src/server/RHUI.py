@@ -16,6 +16,7 @@ import gevent
 import RHUtils
 from RHUtils import catchLogExceptionsWrapper
 from Database import ProgramMethod
+from filtermanager import Flt
 import logging
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ class UIPanel():
     label: str
     page: str
     order: int = 0
+    open: bool = False
 
 @dataclass
 class GeneralSetting():
@@ -80,6 +82,12 @@ class QuickButton():
     fn: callable
     args: dict
 
+@dataclass
+class Markdown():
+    panel: str
+    name: str
+    desc: str
+
 class RHUI():
     # Language placeholder (Overwritten after module init)
     def __(self, *args):
@@ -90,6 +98,7 @@ class RHUI():
         self._socket = SOCKET_IO
         self._racecontext = RaceContext
         self._events = Events
+        self._filters = RaceContext.filters
 
         self._pilot_attributes = []
         self._heat_attributes = []
@@ -99,6 +108,7 @@ class RHUI():
         self._ui_panels = []
         self._general_settings = []
         self._quickbuttons = []
+        self._markdowns = []
 
     # Pilot Attributes
     def register_pilot_attribute(self, field:UIField):
@@ -176,14 +186,14 @@ class RHUI():
         return self._raceformat_attributes
 
     # UI Panels
-    def register_ui_panel(self, name, label, page, order=0):
+    def register_ui_panel(self, name, label, page, order=0, open = False,):
         for idx, panel in enumerate(self._ui_panels):
             if panel.name == name:
-                self._ui_panels[idx] = UIPanel(name, label, page, order)
+                self._ui_panels[idx] = UIPanel(name, label, page, order, open)
                 logger.debug(F'Redefining panel "{name}"')
                 break
         else:
-            self._ui_panels.append(UIPanel(name, label, page, order))
+            self._ui_panels.append(UIPanel(name, label, page, order, open))
         return self.ui_panels
 
     @property
@@ -239,6 +249,29 @@ class RHUI():
                     btn.fn(btn.args)
                     return
 
+    # Markdown
+    def register_markdown(self, panel, name, desc):
+        for idx, markdown in enumerate(self._markdowns):
+            if markdown.name == name:
+                self._markdowns[idx] = Markdown(panel, name, desc)
+                logger.debug(F'Redefining markdown "{name}"')
+                break
+        else:
+            self._markdowns.append(Markdown(panel, name, desc))
+        return self._markdowns
+
+    def get_panel_markdowns(self, name):
+        payload = []
+        for md in self.markdowns:
+            if md.panel == name:
+                payload.append(md)
+
+        return payload
+
+    @property
+    def markdowns(self):
+        return self._markdowns
+
     # Blueprints
     def add_blueprint(self, blueprint):
         self._app.register_blueprint(blueprint)
@@ -288,15 +321,26 @@ class RHUI():
                         'label': button.label,
                     })
 
+                markdowns = []
+                for md in self.get_panel_markdowns(panel.name):
+                    markdowns.append({
+                        'name': md.name,
+                        'desc': md.desc,
+                    })
+
                 emit_payload['panels'].append({
                     'panel': {
                         'name': panel.name,
                         'label': panel.label,
                         'order': panel.order,
+                        'open': panel.open,
                     },
                     'settings': settings,
-                    'quickbuttons': buttons
+                    'quickbuttons': buttons,
+                    'markdowns': markdowns
                 })
+
+        emit_payload = self._filters.run_filters(Flt.EMIT_UI, emit_payload)
 
         if ('nobroadcast' in params):
             emit('ui', emit_payload)
@@ -365,6 +409,8 @@ class RHUI():
             'plugins': plugin_data
         }
 
+        emit_payload = self._filters.run_filters(Flt.EMIT_PLUGIN_LIST, emit_payload)
+
         if ('nobroadcast' in params):
             emit('plugin_list', emit_payload)
         else:
@@ -407,6 +453,8 @@ class RHUI():
             'calc_result': calc_result
         }
 
+        emit_payload = self._filters.run_filters(Flt.EMIT_HEAT_PLAN, emit_payload)
+
         self._socket.emit('heat_plan_result', emit_payload)
 
     def emit_race_stage(self, payload):
@@ -447,6 +495,7 @@ class RHUI():
                 'pi_staging_at_s': self._racecontext.race.stage_time_monotonic,
                 'next_round': self._racecontext.rhdata.get_max_round(heat_id) + 1
             }
+
         if ('nobroadcast' in params):
             emit('race_status', emit_payload)
         else:
@@ -500,6 +549,8 @@ class RHUI():
         emit_payload = []
         for sensor in self._racecontext.sensors:
             emit_payload.append({sensor.name: sensor.getReadings()})
+
+        emit_payload = self._filters.run_filters(Flt.EMIT_SENSOR_DATA, emit_payload)
 
         if ('nobroadcast' in params):
             emit('environmental_data', emit_payload)
@@ -714,6 +765,8 @@ class RHUI():
             # 'classes': current_classes,
         }
 
+        emit_payload = self._filters.run_filters(Flt.EMIT_RACE_LIST, emit_payload)
+
         if ('nobroadcast' in params):
             emit('race_list', emit_payload)
         else:
@@ -798,6 +851,7 @@ class RHUI():
             current_heat['order'] = heat.order
             current_heat['status'] = heat.status
             current_heat['auto_frequency'] = heat.auto_frequency
+            current_heat['active'] = heat.active
             current_heat['next_round'] = self._racecontext.rhdata.get_max_round(heat.id)
 
             current_heat['slots'] = []
@@ -832,6 +886,9 @@ class RHUI():
         emit_payload = {
             'heats': heats,
         }
+
+        emit_payload = self._filters.run_filters(Flt.EMIT_HEAT_DATA, emit_payload)
+
         if ('nobroadcast' in params):
             emit('heat_data', emit_payload)
         elif ('noself' in params):
@@ -863,6 +920,9 @@ class RHUI():
         emit_payload = {
             'classes': current_classes,
         }
+
+        emit_payload = self._filters.run_filters(Flt.EMIT_CLASS_DATA, emit_payload)
+
         if ('nobroadcast' in params):
             emit('class_data', emit_payload)
         elif ('noself' in params):
@@ -905,6 +965,9 @@ class RHUI():
         emit_payload = {
             'formats': formats,
         }
+
+        emit_payload = self._filters.run_filters(Flt.EMIT_FORMAT_DATA, emit_payload)
+
         if ('nobroadcast' in params):
             emit('format_data', emit_payload)
         elif ('noself' in params):
@@ -962,6 +1025,9 @@ class RHUI():
             'pilotSort': self._racecontext.serverconfig.get_item('UI', 'pilotSort'),
             'attributes': attrs
         }
+
+        emit_payload = self._filters.run_filters(Flt.EMIT_PILOT_DATA, emit_payload)
+
         if ('nobroadcast' in params):
             emit('pilot_data', emit_payload)
         elif ('noself' in params):
@@ -970,6 +1036,35 @@ class RHUI():
             self._socket.emit('pilot_data', emit_payload)
 
         self.emit_heat_data()
+
+    def emit_seat_data(self, **params):
+        """Emits seat data."""
+        seat_list = []
+
+        seatColorOpt = self._racecontext.serverconfig.get_item('LED', 'seatColors')
+        if seatColorOpt:
+            seatColors = seatColorOpt
+        else:
+            seatColors = self._racecontext.serverstate.seat_color_defaults
+
+        for seat in range(self._racecontext.race.num_nodes):
+            seat_list.append({
+                'seat_id': seat,
+                'color': seatColors[seat % len(seatColors)]
+            })
+
+        emit_payload = {
+            'seats': seat_list,
+        }
+
+        emit_payload = self._filters.run_filters(Flt.EMIT_SEAT_DATA, emit_payload)
+
+        if ('nobroadcast' in params):
+            emit('seat_data', emit_payload)
+        elif ('noself' in params):
+            emit('seat_data', emit_payload, broadcast=True, include_self=False)
+        else:
+            self._socket.emit('seat_data', emit_payload)
 
     def emit_current_heat(self, **params):
         '''Emits the current heat.'''
@@ -1065,6 +1160,8 @@ class RHUI():
             emit_payload['callsign'] = None
             emit_payload['pilot_id'] = None
 
+        emit_payload = self._filters.run_filters(Flt.EMIT_PHONETIC_DATA, emit_payload)
+
         if ('nobroadcast' in params):
             emit('phonetic_data', emit_payload)
         else:
@@ -1078,6 +1175,9 @@ class RHUI():
             emit_payload['pilot'] = pilot.phonetic
             emit_payload['callsign'] = pilot.callsign
             emit_payload['pilot_id'] = pilot.id
+
+        emit_payload = self._filters.run_filters(Flt.EMIT_PHONETIC_LEADER, emit_payload)
+
         if ('nobroadcast' in params):
             emit('phonetic_leader', emit_payload)
         else:
@@ -1118,6 +1218,9 @@ class RHUI():
             'domain': domain,
             'winner_flag': winner_flag
         }
+
+        emit_payload = self._filters.run_filters(Flt.EMIT_PHONETIC_TEXT, emit_payload)
+
         if ('nobroadcast' in params):
             emit('phonetic_text', emit_payload)
         else:
@@ -1143,6 +1246,9 @@ class RHUI():
                 'split_time': phonetic_time,
                 'split_speed': phonetic_speed
             }
+
+            emit_payload = self._filters.run_filters(Flt.EMIT_PHONETIC_SPLIT, emit_payload)
+
             if ('nobroadcast' in params):
                 emit('phonetic_split_call', emit_payload)
             else:

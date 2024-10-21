@@ -3,7 +3,7 @@ import functools
 from Database import LapSource
 
 API_VERSION_MAJOR = 1
-API_VERSION_MINOR = 1
+API_VERSION_MINOR = 2
 
 import json
 import inspect
@@ -41,6 +41,8 @@ class RHAPI():
         self.sensors = SensorsAPI(self._racecontext)
         self.eventresults = EventResultsAPI(self._racecontext)
         self.events = EventsAPI(self._racecontext)
+        self.server = ServerAPI(self._racecontext)
+        self.filters = FilterAPI(self._racecontext)
 
         self.__ = self.language.__ # shortcut access
 
@@ -66,12 +68,16 @@ class UserInterfaceAPI():
     def panels(self):
         return self._racecontext.rhui.ui_panels
 
-    def register_panel(self, name, label, page, order=0):
-        return self._racecontext.rhui.register_ui_panel(name, label, page, order)
+    def register_panel(self, name, label, page, order=0, open = False):
+        return self._racecontext.rhui.register_ui_panel(name, label, page, order, open)
 
     # Quick button
     def register_quickbutton(self, panel, name, label, function, args=None):
         return self._racecontext.rhui.register_quickbutton(panel, name, label, function, args)
+
+    # Markdown
+    def register_markdown(self, panel, name, desc):
+        return self._racecontext.rhui.register_markdown(panel, name, desc)
 
     # Blueprint
     def blueprint_add(self, blueprint):
@@ -1262,3 +1268,29 @@ class EventsAPI():
     def trigger(self, event, args):
         self._racecontext.events.trigger(event, args)
 
+#
+# Server
+#
+class ServerAPI():
+    def __init__(self, race_context):
+        self._racecontext = race_context
+
+    def enable_heartbeat_event(self):
+        self._racecontext.serverstate.enable_heartbeat_event = True
+
+
+#
+# Filters
+#
+class FilterAPI():
+    def __init__(self, race_context):
+        self._racecontext = race_context
+
+    def add(self, type, name, fn, priority=200):
+        self._racecontext.filters.add_filter(type, name, fn, priority)
+
+    def remove(self, type, name):
+        self._racecontext.filters.remove_filter(type, name)
+
+    def run(self, type, data):
+        return self._racecontext.filters.run_filters(type, data)
