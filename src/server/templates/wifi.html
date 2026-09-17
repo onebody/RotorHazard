@@ -1,0 +1,53 @@
+{% extends "layout.html" %} 
+
+
+{% block title %}{{ __('Results') }}{% endblock %}
+
+
+
+{% block head %}
+
+<script src="./static/showdown-1.9.1/showdown.min.js"></script>
+
+{% endblock %} {% block content %}
+
+<main class="page-rounds">
+
+ <div class="container">
+        <h1>WiFi 连接管理器</h1>
+        <form method="POST">
+            <div class="form-group">
+
+                <label for="ssid">选择网络：</label>
+                <select name="ssid-1" id="ssid-1">
+                    <option value="">-- 请选择 WiFi 网络 --</option>
+                    {% for wifi in wifi_list %}
+                    <option value="{{ wifi }}">{{ wifi }}</option>
+                    {% endfor %}
+                </select>
+
+                  <label for="password">WIFI SSID：</label>
+                <input type="text" name="ssid" id="ssid" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="password">输入密码：</label>
+                <input type="password" name="password" id="password" required>
+            </div>
+            
+            <button type="submit">连接</button>
+        </form>
+        
+        {% if message %}
+        <div class="message {% if '失败' in message %}error{% endif %}">
+            {{ message }}
+        </div>
+        {% endif %}
+    </div>
+
+{% if Debug %}
+<p><button class="debug button-like clean-cache unprinted">{{ __('Clean Cache') }}</button></p>
+{% endif %}
+
+</main>
+{% endblock %}

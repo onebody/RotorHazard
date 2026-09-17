@@ -634,6 +634,39 @@ def render_stream_heat(heat_id):
         heat_id=heat_id
     )
 
+# OSD overlay routes (fork addition)
+# Reference: https://github.com/dutchdronesquad/rh-stream-overlays
+@APP.route("/stream/ol/<string:name>/node/<int:node_id>")
+def render_node_overlay(name, node_id):
+    """Render the node overlay."""
+    return render_template(
+        f"stream/nodes/node_{name}.html",
+        node_id=node_id - 1,
+        stream_overlays_static='/static/stream_overlays/static')
+
+@APP.route("/stream/ol/<string:name>/topbar")
+def render_topbar_overlay(name):
+    """Render the topbar overlay."""
+    return render_template(
+        f"stream/topbars/topbar_{name}.html",
+        stream_overlays_static='/static/stream_overlays/static')
+
+@APP.route("/stream/ol/<string:name>/leaderboard/<int:class_id>/overall")
+def render_overall_class_overlay(name, class_id):
+    """Render the overall class leaderboard overlay."""
+    return render_template(
+        f"stream/leaderboard/{name}/overall.html",
+        stream_overlays_static='/static/stream_overlays/static',
+        class_id=class_id)
+
+@APP.route("/stream/ol/<string:name>/leaderboard/<int:class_id>/class")
+def render_class_leaderboard_overlay(name, class_id):
+    """Render the class leaderboard overlay."""
+    return render_template(
+        f"stream/leaderboard/{name}/class.html",
+        stream_overlays_static='/static/stream_overlays/static',
+        class_id=class_id)
+
 @APP.route('/scanner')
 @requires_auth
 def render_scanner():
@@ -666,6 +699,61 @@ APP.register_blueprint(Blueprint(
     static_url_path='/shared',
     static_folder=os.path.join(DATA_DIR, 'shared')
     ))
+
+
+# WiFi management (fork addition)
+def get_wifi_list():
+    """获取可用 WiFi 列表"""
+    try:
+        command = 'nmcli -t -f SSID dev wifi list'
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        wifi_list = result.stdout.strip().split('\n')
+        return [ssid for ssid in wifi_list if ssid]
+    except Exception as e:
+        logger.debug("Error getting WiFi list: %s", e)
+        return []
+
+@APP.route('/wifi_manager', methods=['GET', 'POST'])
+@requires_auth
+def render_wifimanager():
+    '''WiFi 管理页面'''
+    wifi_list = get_wifi_list()
+    message = ''
+
+    if request.method == 'POST':
+        ssid = request.form.get('ssid')
+        password = request.form.get('password')
+        try:
+            connect_command = f'nmcli device wifi connect "{ssid}" password "{password}"'
+            connect_result = subprocess.run(connect_command, shell=True, capture_output=True, text=True)
+            if connect_result.returncode == 0:
+                message = f"{ssid} 连接成功！"
+            else:
+                message = f"{ssid} 连接失败: {connect_result.stderr}"
+        except Exception as e:
+            message = f"{ssid} 连接错误: {e}"
+
+    return render_template('wifi.html', wifi_list=wifi_list, wifi_message=message)
+
+# Single-node judge view (fork addition)
+@APP.route("/runone/node/<int:node_id>")
+@requires_auth
+def render_runone_node(node_id):
+    """比赛时单节点裁判显示页面"""
+    frequencies = [node.frequency for node in RaceContext.interface.nodes]
+    nodes = []
+    for idx, freq in enumerate(frequencies):
+        if freq:
+            nodes.append({"freq": freq, "index": idx})
+
+    return render_template("runone.html",
+        led_enabled=(RaceContext.led_manager.isEnabled() or (RaceContext.cluster and RaceContext.cluster.hasRecEventsSecondaries())),
+        vrx_enabled=RaceContext.vrx_manager.isEnabled(),
+        num_nodes=RaceContext.race.num_nodes,
+        nodes=nodes,
+        node_id=node_id - 1,
+        cluster_has_secondaries=(RaceContext.cluster and RaceContext.cluster.hasSecondaries()),
+    )
 
 
 # Debug Routes

@@ -1,10 +1,8 @@
 # NuclearHazard Core Timer
 
-Current hardware version: v8
-
 NuclearHazard Core is a design which allows simple access to RotorHazard timer hardware by allowing it to be populated directly by PCB manufacturers.
 
-[NuclearHazard timer kits are available for purchase](https://nuclearquads.com) from the board designer.
+[NuclearHazard timer kits are available for purchase](https://nuclearquads.etsy.com/listing/1428199972) from the board designer.
 
 ## Features
 
@@ -98,15 +96,13 @@ Print the case with support for only the pi/power hole, sd card cutout, and led 
 
 ## Troubleshooting
 
-**Can't flash STM32**: Make sure UART is enabled and the 'boot' [config.txt file](https://github.com/RotorHazard/RotorHazard/blob/main/doc/Software%20Setup.md#3-apply-changes-to-the-boot-configtxt-file) is set up.
+**Can't flash STM32**: Make sure UART is enabled and [config.txt](https://github.com/RotorHazard/RotorHazard/blob/main/doc/Software%20Setup.md#3-apply-changes-to-bootconfigtxt) is set up.
 
 **RXs won't change channel**: An early batch of RX carrier cards misprinted the alignment dot. Try inserting the carrier cards backwards.
 
-**Shutdown button not working**: For the NuclearHazard PCB, the [shutdown button](https://github.com/RotorHazard/RotorHazard/blob/main/doc/Shutdown%20Button.md) needs to be configured to use GPIO19: On the _Advanced Settings_ page in the _Hardware_ panel, set "Shutdown Button GPIO Number" to 19.
-
 ## Schematic
 
-[Schematic](https://github.com/RotorHazard/RotorHazard/blob/main/resources/NuclearHazardCore/pcb/img/Schematic_NuclearHazard.pdf)
+[Schematic](https://github.com/SpencerGraffunder/RotorHazard/blob/NuclearHazardHardware/resources/NuclearHazard/pcb/img/Schematic_NuclearHazard.pdf)
 
 ## Ordering the PCB
 

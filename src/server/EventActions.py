@@ -65,7 +65,11 @@ class EventActions:
     def runEffect(self, action, args):
         self.logger.debug("Calling effect '{}', node {}".format(action, \
                             getNumericEntry(args, 'node_index', -1) + 1))
-        self.effects[action['effect']].runEffect(action, args)
+        effect_name = action.get('effect')
+        if effect_name in self.effects:
+            self.effects[effect_name].runEffect(action, args)
+        else:
+            self.logger.warning("Effect '{}' not found, skipping.".format(effect_name))
 
 class ActionEffect():
     def __init__(self, label, effect_fn, fields:List[UIField], name=None):

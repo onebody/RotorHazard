@@ -53,6 +53,8 @@ class Config:
         self.config['LED']['ledEffects'] = ''
         self.config['LED']['ledBrightness'] = 32
         self.config['LED']['ledColorMode'] = ''
+        self.config['LED']['ledColorNodes'] = ''
+        self.config['LED']['ledColorFreqs'] = ''
         self.config['LED']['seatColors'] = [
             "#0022ff",  # Blue
             "#ff5500",  # Orange
