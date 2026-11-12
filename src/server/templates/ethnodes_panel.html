@@ -1,0 +1,194 @@
+{# RH-ENE 以太网节点管理面板内容（共享 fragment）。
+   由 settings.html（硬件/节点区 panel）与 ethnodes.html（独立深链页）共同 include。
+   外层 panel/main 包装由 includer 提供；本 fragment 只含内容 + 自足 JS。 #}
+<p>{{ __('ENP-W distributed timing nodes. Discovery only records candidates; confirming a node admits it and assigns seats. Seat and whitelist changes are allowed only while the race is READY.') }}</p>
+
+<div class="control-set">
+	<b>{{ __('Subsystem') }}:</b> <span id="eth-enabled">{{ __('Loading...') }}</span>
+	&nbsp;|&nbsp; <b>{{ __('Uplink') }}:</b> <span id="eth-ready"></span>
+	<span id="eth-failure" class="priority-message"></span>
+	&nbsp; <button id="eth-reload">{{ __('Reload') }}</button>
+</div>
+
+<h3>{{ __('Local timing nodes') }}</h3>
+<table class="settings-table">
+	<thead>
+		<tr>
+			<th>{{ __('Name') }}</th><th>{{ __('Transport') }}</th><th>{{ __('Port') }}</th>
+			<th>{{ __('Seats') }}</th><th>{{ __('Firmware') }}</th><th>{{ __('API') }}</th>
+			<th>{{ __('Status') }}</th>
+		</tr>
+	</thead>
+	<tbody id="eth-local-nodes"></tbody>
+</table>
+
+<h3>{{ __('Discovered candidates') }}</h3>
+<table class="settings-table">
+	<thead>
+		<tr>
+			<th>{{ __('Node UID') }}</th><th>{{ __('Device') }}</th><th>{{ __('Firmware') }}</th>
+			<th>{{ __('Channels') }}</th><th>{{ __('Confirmed') }}</th><th>{{ __('Action') }}</th>
+		</tr>
+	</thead>
+	<tbody id="eth-candidates"></tbody>
+</table>
+
+<h3>{{ __('Matched nodes') }}</h3>
+<table class="settings-table">
+	<thead>
+		<tr>
+			<th>{{ __('Node UID') }}</th><th>{{ __('First seat') }}</th><th>{{ __('Channels') }}</th>
+			<th>{{ __('Admitted') }}</th><th>{{ __('Link') }}</th><th>{{ __('Offset (ms)') }}</th>
+			<th>{{ __('Clock') }}</th><th>{{ __('Action') }}</th>
+		</tr>
+	</thead>
+	<tbody id="eth-nodes"></tbody>
+</table>
+
+<h3>{{ __('Network quality') }}</h3>
+<ul id="eth-stats"></ul>
+
+<script type="text/javascript" charset="utf-8">
+	$(document).ready(function () {
+		// 所有来自网络播报的字段（uid/device_type/firmware）一律用 .text() 注入，杜绝 XSS。
+		function render_status(s) {
+			$('#eth-enabled').text(s.enabled ? __('Enabled') : __('Disabled'));
+			$('#eth-ready').text(s.ready ? __('Ready') : __('Not ready'));
+			$('#eth-failure').text(s.ready_failure_msg || '');
+
+			// 增量2：本地串口原生设备（有线 USB / 无线桥接），传输标签来自配置。
+			function transport_label(t) {
+				if (t === 'wired') { return __('Wired'); }
+				if (t === 'wireless') { return __('Wireless'); }
+				return __('Untagged');
+			}
+			var $l = $('#eth-local-nodes').empty();
+			var local = s.local_nodes || [];
+			if (!local.length) {
+				$l.append($('<tr>').append($('<td colspan="7">').text(__('No local serial nodes'))));
+			}
+			local.forEach(function (d) {
+				var $tr = $('<tr>');
+				$tr.append($('<td>').text(d.label));
+				$tr.append($('<td>').text(transport_label(d.transport)));
+				$tr.append($('<td>').text(d.port));
+				$tr.append($('<td>').text(d.seats));
+				$tr.append($('<td>').text(d.firmware_version || '—'));
+				$tr.append($('<td>').text(d.api_level));
+				$tr.append($('<td>').text(d.identified ? __('Identified') : __('Unidentified')));
+				$l.append($tr);
+			});
+
+			var $c = $('#eth-candidates').empty();
+			if (!s.candidates.length) {
+				$c.append($('<tr>').append($('<td colspan="6">').text(__('No nodes discovered yet'))));
+			}
+			s.candidates.forEach(function (c) {
+				var $tr = $('<tr>');
+				$tr.append($('<td>').text(c.uid));
+				$tr.append($('<td>').text(c.device_type));
+				$tr.append($('<td>').text(c.firmware_version));
+				$tr.append($('<td>').text(c.channels));
+				$tr.append($('<td>').text(c.confirmed ? __('Yes') : __('No')));
+				var $btn = $('<button>').addClass('eth-confirm').text(__('Confirm'))
+					.attr('data-uid', c.uid).attr('data-channels', c.channels);
+				if (c.confirmed) { $btn.prop('disabled', true); }
+				$tr.append($('<td>').append($btn));
+				$c.append($tr);
+			});
+
+			var $n = $('#eth-nodes').empty();
+			if (!s.nodes.length) {
+				$n.append($('<tr>').append($('<td colspan="8">').text(__('No matched nodes yet'))));
+			}
+			s.nodes.forEach(function (n) {
+				var $tr = $('<tr>');
+				var $uid = $('<td>').text(n.uid);
+				$uid.append(' ').append($('<span>').addClass('transport-badge').text(__('Wired')));
+				$tr.append($uid);
+				$tr.append($('<td>').text(n.first_seat + 1));
+				$tr.append($('<td>').text(n.channels));
+				$tr.append($('<td>').text(n.admitted ? __('Yes') : __('No')));
+				$tr.append($('<td>').text(n.online ? __('Online') : __('Offline')));
+				$tr.append($('<td>').text(n.offset_ms === null ? '—' : n.offset_ms));
+				$tr.append($('<td>').text(n.clock_suspect ? __('Suspect') : __('OK')));
+				// 增量3：已匹配节点启停开关。停用=remove(留座位占位)；启用=confirm(无需重新广播)。
+				var $btn;
+				if (n.admitted) {
+					$btn = $('<button>').addClass('eth-remove').text(__('Disable')).attr('data-uid', n.uid);
+				} else {
+					$btn = $('<button>').addClass('eth-enable').text(__('Enable'))
+						.attr('data-uid', n.uid).attr('data-channels', n.channels);
+				}
+				$tr.append($('<td>').append($btn));
+				$n.append($tr);
+			});
+
+			// stats 键是协议侧 snake_case 计数器，映射成可读标签后再走 __() 本地化。
+			var STAT_LABELS = {
+				bad_length: __('Bad length'),
+				crc_errors: __('CRC errors'),
+				version_rejects: __('Version rejects'),
+				unauth_drops: __('Unauthorized drops'),
+				unknown_msg: __('Unknown messages'),
+				rssi_no_reading: __('RSSI no reading'),
+				bad_channel: __('Bad channel'),
+				duplicate_events: __('Duplicate events'),
+				clock_suspects: __('Clock suspects'),
+				offline_sessions: __('Offline sessions'),
+				unsynced_events: __('Unsynced events')
+			};
+			var $st = $('#eth-stats').empty();
+			Object.keys(s.stats).forEach(function (k) {
+				$st.append($('<li>').text((STAT_LABELS[k] || k) + ': ' + s.stats[k]));
+			});
+		}
+
+		function request_status() { socket.emit('load_ethnodes', {}); }
+		function request_language() { socket.emit('load_data', { load_types: ['language', 'all_languages'] }); }
+		socket.on('ethnodes_status', render_status);
+		// 自足：不依赖 includer 的 data_dependencies。连接建立即拉语言与状态；
+		// language 事件到达后（interface_language 此时已就绪）再渲染一次，避免首帧
+		// ethnodes_status 抢在 language 之前到达时动态文案回退成英文。独立页 /ethnodes
+		// 没有 settings 的 language 处理器，故这里自行就绪 interface_language；
+		// all_languages 提供译文表（rotorhazard.js 全局处理器填充 language_strings），
+		// 到达后再渲染一次，确保独立页动态文案也能查到译文。
+		socket.on('language', function (msg) {
+			if (msg && typeof msg.language !== 'undefined') { rotorhazard.interface_language = msg.language; }
+			request_status();
+		});
+		socket.on('all_languages', request_status);
+		socket.on('connect', function () { request_language(); request_status(); });
+		if (socket.connected) { request_language(); request_status(); }
+
+		$(document).on('click', '.eth-confirm', function () {
+			socket.emit('ethnodes_confirm', {
+				uid: $(this).attr('data-uid'),
+				channels: parseInt($(this).attr('data-channels'), 10)
+			});
+		});
+		// 增量3：启用已停用的已匹配节点，走既有 confirm（同 uid 同 channels → admitted=True，无需重新广播）。
+		$(document).on('click', '.eth-enable', function () {
+			socket.emit('ethnodes_confirm', {
+				uid: $(this).attr('data-uid'),
+				channels: parseInt($(this).attr('data-channels'), 10)
+			});
+		});
+		$(document).on('click', '.eth-remove', function () {
+			socket.emit('ethnodes_remove', { uid: $(this).attr('data-uid') });
+		});
+		$('#eth-reload').click(function () {
+			socket.emit('ethnodes_reload', {});
+		});
+
+		// 从导航 /settings#ethnodes 进入时自动展开硬件区里的本 panel。
+		if (window.location.hash === '#ethnodes') {
+			var $p = $('#ethnodes');
+			if ($p.length) {
+				$p.addClass('open');
+				$p.children('.panel-content').show();
+				$p[0].scrollIntoView();
+			}
+		}
+	});
+</script>

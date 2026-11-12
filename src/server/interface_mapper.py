@@ -10,6 +10,7 @@ class InterfaceType:
     MOCK = 0
     RH = 1
     RHAPI = 2
+    ETHNODE = 3  # D-3：以太网计时节点（EthernetInterface）；挂载入口在 Phase 2.4
 
 @dataclass
 class NodeMap:

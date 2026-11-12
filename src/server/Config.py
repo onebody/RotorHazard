@@ -31,6 +31,8 @@ class Config:
             'LOGGING': {},
             'SENSORS': {},
             'PLUGINS': {},
+            'ETHERNET_NODES': {},
+            'LOCAL_NODES': {},
         }
 
         self.config = copy.copy(self.config_sections)
@@ -68,6 +70,17 @@ class Config:
 
         # hardware default configurations
         self.config['HARDWARE']['I2C_BUS'] = 1
+
+        # ENP-W ethernet timing nodes (RH-ENE). Disabled by default so a stock
+        #  install never binds UDP 9020/9021; NODES is the confirmed-node registry
+        #  (D-2: discovery only records, admission needs an operator action).
+        self.config['ETHERNET_NODES']['ENABLED'] = False
+        self.config['ETHERNET_NODES']['NODES'] = []
+
+        # Local serial-native timing nodes (RH-ENE increment 2). PORT_TAGS maps a
+        # serial port to {label, transport} so the ethnodes panel can show wired vs
+        # wireless devices. Untagged ports are left unlabeled (config over guess).
+        self.config['LOCAL_NODES']['PORT_TAGS'] = {}
 
         # other default configurations
         self.config['GENERAL']['HTTP_PORT'] = 5000
