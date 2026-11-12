@@ -55,6 +55,9 @@ class EthernetUI(unittest.TestCase):
 
     def ready(self):
         self.enable()
+        # 4.6.0 起 initialize_rh_interface() 不再自带 clear_interfaces()；rh_program_initialize
+        # 之后重挂必须先清理，否则 MOCK/ETHNODE 二次追加、ethnode() 命中过期接口。
+        server.RaceContext.interface.clear_interfaces()
         server.initialize_rh_interface()
         server.RaceContext.race.race_status = RaceStatus.READY
 

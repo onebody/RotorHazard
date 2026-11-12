@@ -3982,6 +3982,10 @@ def reload_ethernet_nodes():
     stop_background_threads()
     gevent.sleep(0.1)
     try:
+        # RH-ENE@4.6.0：上游把 clear_interfaces() 从 initialize_rh_interface() 移进
+        # rh_program_initialize()（见 :4342）。reload 直接调 initialize 会二次挂载 MOCK/ETHNODE
+        # 并残留旧接口，故在此显式清理，复刻旧版"清理→重挂"的单一挂载不变量。
+        RaceContext.interface.clear_interfaces()
         if not initialize_rh_interface():
             return False
         init_race_state()

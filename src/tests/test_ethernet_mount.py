@@ -49,6 +49,12 @@ class EthernetMount(unittest.TestCase):
     def enable(self):
         server.RaceContext.serverconfig.set_item('ETHERNET_NODES', 'ENABLED', True)
 
+    def mount(self):
+        # 4.6.0 起 initialize_rh_interface() 不再自带 clear_interfaces()；测试在
+        # rh_program_initialize() 之后重挂必须先清理，复刻生产"清理→挂载"单一不变量。
+        server.RaceContext.interface.clear_interfaces()
+        server.initialize_rh_interface()
+
     def ethnode(self):
         for meta in server.RaceContext.interface.mapped_interfaces:
             if meta.type == InterfaceType.ETHNODE:
@@ -68,7 +74,7 @@ class EthernetMount(unittest.TestCase):
     def test_an_enabled_but_empty_registry_mounts_a_listen_only_ethnode(self):
         '''D-2：发现要先能跑——即便一个座位都没确认，ETHNODE 接口也要在。'''
         self.enable()
-        server.initialize_rh_interface()
+        self.mount()
         interface = self.ethnode()
         self.assertIsNotNone(interface)
         self.assertEqual(0, interface.num_nodes)
@@ -76,7 +82,7 @@ class EthernetMount(unittest.TestCase):
     def test_ethnode_is_appended_last_and_mock_indices_do_not_drift(self):
         self.enable()
         self.registry.confirm(UID, 2)
-        server.initialize_rh_interface()
+        self.mount()
         mapper = server.RaceContext.interface
         self.assertEqual(InterfaceType.ETHNODE, mapper.mapped_interfaces[-1].type)
         types = self.node_types()
@@ -88,14 +94,14 @@ class EthernetMount(unittest.TestCase):
         '''S-1/N-2：事件只走 server 的串行队列回调，不另开路径。'''
         self.enable()
         self.registry.confirm(UID, 2)
-        server.initialize_rh_interface()
+        self.mount()
         self.assertIs(server.pass_record_callback, self.ethnode().pass_record_callback)
 
     def test_the_four_unconditional_mapper_forwards_do_not_raise(self):
         '''interface_mapper 对所有接口无条件转发的四个（:179/:225/:235/:241）。'''
         self.enable()
         self.registry.confirm(UID, 2)
-        server.initialize_rh_interface()
+        self.mount()
         mapper = server.RaceContext.interface
         mapper.jump_to_bootloader()
         mapper.close_fwupd_serial_port()
@@ -109,14 +115,14 @@ class EthernetMount(unittest.TestCase):
     def test_reload_is_refused_while_racing(self):
         self.enable()
         self.registry.confirm(UID, 2)
-        server.initialize_rh_interface()
+        self.mount()
         server.RaceContext.race.race_status = RaceStatus.RACING
         self.assertFalse(server.reload_ethernet_nodes())
 
     def test_reload_in_ready_state_rebuilds_seats_from_the_registry(self):
         self.enable()
         self.registry.confirm(UID, 2)
-        server.initialize_rh_interface()
+        self.mount()
         server.RaceContext.race.race_status = RaceStatus.READY
         self.registry.confirm(UID2, 3)  # 操作员在 READY 态确认第二台
         self.assertTrue(server.reload_ethernet_nodes())
