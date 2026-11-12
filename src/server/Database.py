@@ -300,7 +300,7 @@ class SavedRaceMeta(Base):
     heat_id = DB.Column(DB.Integer, DB.ForeignKey("heat.id"), nullable=False)
     class_id = DB.Column(DB.Integer, DB.ForeignKey("race_class.id"), nullable=True)
     format_id = DB.Column(DB.Integer, DB.ForeignKey("race_format.id"), nullable=True)
-    start_time = DB.Column(DB.Integer, nullable=False) # internal monotonic time
+    start_time = DB.Column(DB.Float, nullable=False) # internal monotonic time
     start_time_formatted = DB.Column(DB.String, nullable=False) # local human-readable time
     results = DB.Column(DB.PickleType, nullable=True)
     _cache_status = DB.Column('cacheStatus', DB.String(16), nullable=False)
@@ -383,6 +383,21 @@ class SavedRaceLapSplit(Base):
 
     def __repr__(self):
         return '<SavedRaceLapSplit %r>' % self.id
+
+class DeletedRace(Base):
+    __tablename__ = 'deleted_race'
+    id = DB.Column(DB.Integer, primary_key=True)
+    race_id = DB.Column(DB.Integer, nullable=False)
+    round_id = DB.Column(DB.Integer, nullable=False)
+    heat_id = DB.Column(DB.Integer, nullable=False)
+    class_id = DB.Column(DB.Integer, nullable=True)
+    format_id = DB.Column(DB.Integer, nullable=True)
+    start_time_formatted = DB.Column(DB.String, nullable=True)
+    deleted_time_formatted = DB.Column(DB.String, nullable=False)
+    data = DB.Column(DB.String, nullable=False) # JSON copy of the race with its attributes, pilot runs, laps and splits
+
+    def __repr__(self):
+        return '<DeletedRace %r>' % self.id
 
 class LapSource:
     REALTIME = 0

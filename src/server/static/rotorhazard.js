@@ -27,6 +27,19 @@ const RACING_MODE_COOP = 2;   // COOP_ENABLED
 var speakObjsQueue = [];
 var checkSpeakQueueFlag = true;
 var checkSpeakQueueCntr = 0;
+var speakQueuePausedFlag = false;
+var speakQueuePauseTimer = null;
+// cleared by layout-basic.html so stream-overlay pages stay silent
+var speakServerTextFlag = true;
+// cleared by pages that must not sound the staging and race tones
+var playRaceTonesFlag = true;
+// true until the first 'race_status' after load, to resume a race already running
+var raceTimerResumeCheck = true;
+// false while another tab on this machine plays the audio (see claimAudio)
+var audioOwnerFlag = true;
+var audioOwnerConfirmed = false;
+var audioOwnerReplyTimer = null;
+const AUDIO_OWNER_REPLY_TIMEOUT_MS = 5000;
 var reloading = false;
 
 /* global functions */
@@ -475,6 +488,25 @@ webAudioUnlock(globalAudioCtx);
 // test for Firefox (has broken RamptoValue audio function)
 var isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
 
+// starts the race clock from the server's staging/start times, so the tones follow the
+//  race rather than whichever page happens to be showing it
+function race_timer_kickoff(msg) {
+	rotorhazard.timer.stopAll();
+
+	var staging_start_pi = (msg.pi_staging_at_s * 1000); // convert seconds (pi) to millis (JS)
+	var race_start_pi = (msg.pi_starts_at_s * 1000); // convert seconds (pi) to millis (JS)
+
+	rotorhazard.timer.race.hidden_staging = Boolean(msg.hide_stage_timer);
+	rotorhazard.timer.race.count_up = Boolean(msg.unlimited_time);
+	rotorhazard.timer.race.duration_tenths = msg.race_time_sec * 10;
+
+	rotorhazard.timer.race.staging_tones = msg.staging_tones;
+
+	rotorhazard.timer.race.start(race_start_pi, staging_start_pi);
+
+	rotorhazard.winner_declared_flag = false;
+}
+
 //Generate tone. All arguments are optional:
 //duration of the tone in milliseconds. Default is 500
 //frequency of the tone in hertz. default is 440
@@ -482,6 +514,9 @@ var isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
 //callback to use on end of tone
 /* https://stackoverflow.com/questions/879152/how-do-i-make-javascript-beep/29641185#29641185 */
 function play_beep(duration, frequency, volume, type, fadetime, callback) {
+	if (!audioAllowed()) {
+		return;
+	}
 	if (volume && volume > MIN_LOG_VOL_LIM) {
 		var oscillator = globalAudioCtx.createOscillator();
 		var gainNode = globalAudioCtx.createGain();
@@ -519,6 +554,9 @@ function play_beep(duration, frequency, volume, type, fadetime, callback) {
 };
 
 function play_mp3_beep(audio_obj, volume) {
+	if (!audioAllowed()) {
+		return;
+	}
 	if (volume && volume > MIN_LOG_VOL_LIM) {
 		audio_obj.volume = volume;
 		audio_obj.play();
@@ -579,7 +617,75 @@ function doSpeak(obj) {
 	return false;
 };
 
+// Pauses speak-queue processing, resumed by resumeSpeakQueue(), by a priority callout arriving, or by the timeout
+function pauseSpeakQueue(timeout_secs) {
+	speakQueuePausedFlag = true;
+	if (speakQueuePauseTimer) {
+		clearTimeout(speakQueuePauseTimer);
+	}
+	speakQueuePauseTimer = setTimeout(resumeSpeakQueue, (timeout_secs || 5) * 1000);
+};
+
+function resumeSpeakQueue() {
+	speakQueuePausedFlag = false;
+	if (speakQueuePauseTimer) {
+		clearTimeout(speakQueuePauseTimer);
+		speakQueuePauseTimer = null;
+	}
+};
+
+// Empties the speak queue and stops any callout being spoken; a pause stays in effect
+function clearSpeakQueue() {
+	speakObjsQueue.length = 0;
+	checkSpeakQueueFlag = true;
+	checkSpeakQueueCntr = 0;
+	$().articulate('stop');
+};
+
+// Gives true if this tab may play audio; the server says which tabs may play
+function audioAllowed() {
+	return audioOwnerFlag || !audioClaimsEnabled();
+};
+
+// Gives true if this tab takes part in choosing its machine's audio tab; pages kept silent stay out
+function audioClaimsEnabled() {
+	return speakServerTextFlag && playRaceTonesFlag;
+};
+
+// Claims the machine's audio for this tab; an active claim takes over, a passive one only registers
+function claimAudio(active) {
+	if (!socket || !socket.connected || !audioClaimsEnabled()) {
+		return;
+	}
+	if (active) {
+		if (globalAudioCtx.state != 'running') {  // a tab whose audio is still locked cannot play
+			active = false;
+		}
+		else if (audioOwnerFlag && audioOwnerConfirmed) {
+			return;
+		}
+		else {
+			audioOwnerFlag = true;
+		}
+	}
+	socket.emit('claim_audio', {'active': active});
+	clearTimeout(audioOwnerReplyTimer);
+	// with no reply, play rather than stay silent
+	audioOwnerReplyTimer = setTimeout(function() { audioOwnerFlag = true; }, AUDIO_OWNER_REPLY_TIMEOUT_MS);
+};
+
+function audioWasOwner() {
+	try {
+		return sessionStorage.getItem('rh_audio_owner') == '1';
+	} catch (e) {
+		return false;
+	}
+};
+
 function speak(obj, priority) {
+	if (!audioAllowed()) {
+		return;
+	}
 	if (typeof(priority)=='undefined')
 		priority = false;
 
@@ -599,6 +705,13 @@ function initSpeak(event) {
 
 $(document).on('click', function(event){
 	initSpeak(event);
+});
+
+// focus number input when its spin buttons are clicked (Firefox does not)
+$(document).on('mousedown', 'input[type=number]', function() {
+	if (document.activeElement !== this) {
+		this.focus();
+	}
 });
 
 function __(text) {
@@ -1365,32 +1478,38 @@ rotorhazard.timer.race.callbacks.step = function(timer){
 			&& timer.time_staging_tenths % 10 == 0
 			&& timer.time_staging_tenths != timer.staging_cb_tic) {
 			timer.staging_cb_tic = timer.time_staging_tenths;
-			if (rotorhazard.use_mp3_tones) {
-				play_mp3_beep(sound_stage, rotorhazard.tone_volume);
-			}
-			else {
-				play_beep(100, 440, rotorhazard.tone_volume, 'triangle');
+			if (playRaceTonesFlag) {
+				if (rotorhazard.use_mp3_tones) {
+					play_mp3_beep(sound_stage, rotorhazard.tone_volume);
+				}
+				else {
+					play_beep(100, 440, rotorhazard.tone_volume, 'triangle');
+				}
 			}
 		}
 	} else if (timer.time_tenths == 0 ||
 		(!timer.count_up && timer.time_tenths == timer.duration_tenths)
 		) {
 		// play start tone
-		if (rotorhazard.use_mp3_tones) {
-			play_mp3_beep(sound_buzzer, rotorhazard.tone_volume);
-		}
-		else {
-			play_beep(700, 880, rotorhazard.tone_volume, 'triangle', 0.25);
+		if (playRaceTonesFlag) {
+			if (rotorhazard.use_mp3_tones) {
+				play_mp3_beep(sound_buzzer, rotorhazard.tone_volume);
+			}
+			else {
+				play_beep(700, 880, rotorhazard.tone_volume, 'triangle', 0.25);
+			}
 		}
 	} else {
 		if (!timer.count_up) {
 			if (timer.time_tenths <= 50 && timer.time_tenths > 0) { // Final seconds
 				if (timer.time_tenths % 10 == 0) {
-					if (rotorhazard.use_mp3_tones) {
-						play_mp3_beep(sound_stage, rotorhazard.tone_volume);
-					}
-					else {
-						play_beep(100, 440, rotorhazard.tone_volume, 'triangle');
+					if (playRaceTonesFlag) {
+						if (rotorhazard.use_mp3_tones) {
+							play_mp3_beep(sound_stage, rotorhazard.tone_volume);
+						}
+						else {
+							play_beep(100, 440, rotorhazard.tone_volume, 'triangle');
+						}
 					}
 				}
 			} else if (timer.time_tenths == 100) { // announce 10s only when counting down
@@ -1426,11 +1545,13 @@ rotorhazard.timer.race.callbacks.stop = function(timer){
 }
 rotorhazard.timer.race.callbacks.expire = function(timer){
 	// play expired tone
-	if (rotorhazard.use_mp3_tones) {
-		play_mp3_beep(sound_buzzer, rotorhazard.tone_volume);
-	}
-	else {
-		play_beep(700, 880, rotorhazard.tone_volume, 'triangle', 0.25);
+	if (playRaceTonesFlag) {
+		if (rotorhazard.use_mp3_tones) {
+			play_mp3_beep(sound_buzzer, rotorhazard.tone_volume);
+		}
+		else {
+			play_beep(700, 880, rotorhazard.tone_volume, 'triangle', 0.25);
+		}
 	}
 	$('.time-display').html(timer.renderHTML());
 }
@@ -1520,6 +1641,36 @@ function update_system_message_display() {
 	}
 }
 
+/* Restore a deleted race round, after a confirmation */
+var restore_race_confirm_el = $('<div class="priority-message-interrupt popup">');
+restore_race_confirm_el.append('<h2>' + __('Restore Race') + '</h2>');
+restore_race_confirm_el.append('<div class="popup-content"><p class="restore-race-text"></p>' +
+	'<p><button class="restore-race-confirm-btn">' + __('Restore') + '</button> ' +
+	'<button class="cancel">' + __('Cancel') + '</button></p></div>');
+
+function confirm_restore_deleted_race(deleted_race_id, label, on_confirm=false) {
+	// the server checks the race can still be restored, and says why not, before the confirmation opens
+	socket.emit('check_deleted_race', {'id': deleted_race_id}, function (reply) {
+		if (!reply || !reply.ok) {
+			return;
+		}
+		restore_race_confirm_el.find('.restore-race-text').text(__('Restore {0}?').replace('{0}', label));
+		restore_race_confirm_el.find('.restore-race-confirm-btn').off('click').on('click', function () {
+			$.magnificPopup.close();
+			if (typeof on_confirm === 'function') {
+				on_confirm();
+			}
+			socket.emit('restore_deleted_race', {'id': deleted_race_id});
+		});
+		$.magnificPopup.open({
+			items: {
+				src: restore_race_confirm_el,
+				type: 'inline',
+			}
+		});
+	});
+}
+
 function init_popup_generics() {
 	$('.open-mfp-popup').magnificPopup({
 		type:'inline',
@@ -1542,6 +1693,12 @@ function get_default_articulate_voice() {
 rotorhazard.voice_language = get_default_articulate_voice();  // set initial default voice
 rotorhazard.restoreData();
 
+// push settings into the speech plugin (so the audio-sliders settings are applied on all pages)
+if (typeof jQuery != 'undefined') {
+	$().articulate('volume', rotorhazard.voice_volume);
+	$().articulate('rate', rotorhazard.voice_rate);
+	$().articulate('pitch', rotorhazard.voice_pitch);
+}
 
 if (typeof jQuery != 'undefined') {
 jQuery(document).ready(function($){
@@ -1662,6 +1819,40 @@ jQuery(document).ready(function($){
 	// startup socket connection
 	socket = io.connect(location.protocol + '//' + document.domain + ':' + location.port);
 
+	// audio plays in one tab per machine: the most recently viewed one
+	socket.on('connect', function () {
+		audioOwnerConfirmed = false;
+		claimAudio(audioWasOwner() || document.visibilityState == 'visible');
+	});
+
+	socket.on('audio_owner', function (msg) {
+		clearTimeout(audioOwnerReplyTimer);
+		audioOwnerConfirmed = true;
+		if (audioOwnerFlag && !msg.owner) {  // another tab took over
+			clearSpeakQueue();
+		}
+		audioOwnerFlag = Boolean(msg.owner);
+		try {
+			sessionStorage.setItem('rh_audio_owner', audioOwnerFlag ? '1' : '');
+		} catch (e) {}
+	});
+
+	$(document).on('visibilitychange', function () {
+		if (document.visibilityState == 'visible') {
+			claimAudio(true);
+		}
+	});
+
+	$(window).on('focus', function () {
+		claimAudio(true);
+	});
+
+	globalAudioCtx.addEventListener('statechange', function () {
+		if (globalAudioCtx.state == 'running' && document.visibilityState == 'visible') {
+			claimAudio(true);
+		}
+	});
+
 	// reconnect when visibility is regained
 	$(document).on('visibilitychange', function(){
 		if (!document['hidden']) {
@@ -1688,8 +1879,161 @@ jQuery(document).ready(function($){
 		}
 	});
 
+	$(document).on('click', 'a.restore-deleted-race-link', function (event) {
+		event.preventDefault();
+		confirm_restore_deleted_race($(this).data('id'), $(this).data('label'));
+	});
+
+	// speech pushed from the server
+	socket.on('phonetic_text', function (msg) {
+		if (!speakServerTextFlag) {
+			return;
+		}
+		if (msg.winner_flag) {
+			if (rotorhazard.beep_race_winner_declared) {
+				speak(WINNER_FLAG_CHAR);
+			}
+			rotorhazard.winner_declared_flag = true;
+		}
+		if (msg.text) {
+			if (!msg.domain || rotorhazard['voice_' + msg.domain]) {
+				speak('<div class="speech">' + __l(msg.text) + '</div>', msg.priority);
+			}
+		}
+		if (msg.resume_queue) {  // the awaited reply arrived, so stop holding the queue
+			resumeSpeakQueue();
+		}
+	});
+
+	// process the speak queue
+	socket.on('heartbeat', function (msg) {
+		if (speakQueuePausedFlag) {
+			return;
+		}
+		if (speakObjsQueue.length > 0) {
+			var isSpeakingFlag = $().articulate('isSpeaking');
+			if (checkSpeakQueueFlag) {
+				if (!isSpeakingFlag) {
+					var obj = speakObjsQueue.shift();
+					if (speakObjsQueue.length > 0) {  //if more items in queue then
+						checkSpeakQueueFlag = false;  //don't check again until speaking begins
+						checkSpeakQueueCntr = 10;     //set timeout counter to make sure the wait is not indefinite
+					}
+					if (!doSpeak(obj)) {                  //if speaking not triggered then
+						checkSpeakQueueFlag = true;       //don't wait for it
+					}
+				}
+			}  //make sure previous speak has started before checking queue again (up to timeout)
+			else if (isSpeakingFlag || --checkSpeakQueueCntr <= 0) {
+				checkSpeakQueueFlag = true;
+				checkSpeakQueueCntr = 0;
+			}
+		}
+	});
+
+	socket.on('pause_speaking_queue', function (msg) {
+		pauseSpeakQueue(msg ? msg.timeout : undefined);
+	});
+
+	socket.on('resume_speaking_queue', function () {
+		resumeSpeakQueue();
+	});
+
 	socket.on('clear_priority_messages', function () {
 		clear_system_messages();
+	});
+
+	// server time sync, needed before the race clock can run; every page does it so the
+	//  clock and its tones work wherever the browser is sitting
+	rotorhazard.pi_time_request = window.performance.now();
+	socket.emit('get_pi_time');
+
+	socket.on('pi_time', function (msg) {
+		var max_samples = 10;
+		var response_time = window.performance.now();
+		var server_delay = response_time - rotorhazard.pi_time_request;
+		var server_oneway = server_delay ? server_delay / 2 : server_delay;
+
+		var server_time_differential = {
+			'differential': (msg.pi_time_s * 1000) - response_time - server_oneway, // convert seconds (pi) to millis (JS)
+			'response': parseFloat(server_delay)
+		}
+
+		// store sync sample
+		rotorhazard.server_time_differential_samples.push(server_time_differential);
+
+		// sort stored samples
+		rotorhazard.server_time_differential_samples.sort(function(a, b){
+			return a.response - b.response;
+		})
+
+		// remove unusable samples
+		var diff_min = rotorhazard.server_time_differential_samples[0].differential - rotorhazard.server_time_differential_samples[0].response
+		var diff_max = rotorhazard.server_time_differential_samples[0].differential + rotorhazard.server_time_differential_samples[0].response
+
+		rotorhazard.server_time_differential_samples = rotorhazard.server_time_differential_samples.filter(function(value, index, array) {
+			return value.differential >= diff_min && value.differential <= diff_max;
+		});
+
+		// get filtered value
+		var a = [];
+		for (var i in rotorhazard.server_time_differential_samples) {
+			a.push(rotorhazard.server_time_differential_samples[i].differential);
+		}
+		rotorhazard.server_time_differential = median(a);
+
+		// pass current sync to timers
+		rotorhazard.timer.race.sync();
+		rotorhazard.timer.deferred.sync();
+
+		// continue sampling for sync to improve accuracy
+		if (rotorhazard.server_time_differential_samples.length < max_samples) {
+			setTimeout(function(){
+				rotorhazard.pi_time_request = window.performance.now();
+				socket.emit('get_pi_time');
+			}, (Math.random() * 500) + 250); // 0.25 to 0.75s delay
+		}
+
+		// update server info
+		var a = Infinity;
+		for (var i in rotorhazard.server_time_differential_samples) {
+			a = Math.min(a, rotorhazard.server_time_differential_samples[i].response);
+		}
+		rotorhazard.sync_within = Math.ceil(a);
+
+		$('#server-lag').html('<p>Sync quality: within ' + rotorhazard.sync_within + 'ms (' + rotorhazard.server_time_differential_samples.length + '/' + max_samples + ' samples)</p>');
+
+		if (
+			(max_samples >= 10 && SYNC_WARNING_THRESHOLD_10 > rotorhazard.sync_within) ||
+			(max_samples >= 3 && SYNC_WARNING_THRESHOLD_3 > rotorhazard.sync_within) ||
+			SYNC_WARNING_THRESHOLD_1 > rotorhazard.sync_within) {
+			rotorhazard.has_server_sync = true;
+			if (!rotorhazard.timer.running()) {
+				$('.timing-clock .warning').hide();
+			}
+		} else {
+			$('.timing-clock .warning .value').text(rotorhazard.sync_within + 'ms');
+		}
+	});
+
+	// race clock, driven here so every page runs it and sounds the tones
+	socket.on('stage_ready', function (msg) {
+		race_timer_kickoff(msg);
+	});
+
+	socket.on('stop_timer', function () {
+		rotorhazard.timer.race.stop();
+	});
+
+	// picks up a race already under way when the page loads; later starts arrive
+	//  as 'stage_ready', so this fires once
+	socket.on('race_status', function (msg) {
+		if (raceTimerResumeCheck) {
+			raceTimerResumeCheck = false;
+			if (msg.race_status == 1 || msg.race_status == 3) {
+				race_timer_kickoff(msg);
+			}
+		}
 	});
 
 	$(document).on('click', '#message-dismiss-all', function(el){
@@ -1738,6 +2082,11 @@ jQuery(document).ready(function($){
 
 	$('button#cancel_restart_required').click(function (event) {
 		socket.emit('cancel_restart_required');
+		return false;
+	});
+
+	$(document).on('click', 'button.clear-errors-logged', function (event) {
+		socket.emit('clear_errors_logged');
 		return false;
 	});
 
@@ -2152,94 +2501,8 @@ function build_ranking(ranking) {
 }
 /* Frequency Table */
 var freq = {
+	// band/channel frequencies, filled in by the page layout from the server (frequencies.py)
 	frequencies: {
-		R1: 5658,
-		R2: 5695,
-		R3: 5732,
-		R4: 5769,
-		R5: 5806,
-		R6: 5843,
-		R7: 5880,
-		R8: 5917,
-		F1: 5740,
-		F2: 5760,
-		F3: 5780,
-		F4: 5800,
-		F5: 5820,
-		F6: 5840,
-		F7: 5860,
-		F8: 5880,
-		E1: 5705,
-		E2: 5685,
-		E3: 5665,
-		E4: 5645,
-		E5: 5885,
-		E6: 5905,
-		E7: 5925,
-		E8: 5945,
-		B1: 5733,
-		B2: 5752,
-		B3: 5771,
-		B4: 5790,
-		B5: 5809,
-		B6: 5828,
-		B7: 5847,
-		B8: 5866,
-		A1: 5865,
-		A2: 5845,
-		A3: 5825,
-		A4: 5805,
-		A5: 5785,
-		A6: 5765,
-		A7: 5745,
-		A8: 5725,
-		L1: 5362,
-		L2: 5399,
-		L3: 5436,
-		L4: 5473,
-		L5: 5510,
-		L6: 5547,
-		L7: 5584,
-		L8: 5621,
-		U0: 5300,
-		U1: 5325,
-		U2: 5348,
-		U3: 5366,
-		U4: 5384,
-		U5: 5402,
-		U6: 5420,
-		U7: 5438,
-		U8: 5456,
-		U9: 5985,
-		D1: 5660,
-		D2: 5695,
-		D3: 5735,
-		D4: 5770,
-		D5: 5805,
-		D6: 5880,
-		D7: 5914,
-		D8: 5839,
-		J1: 5695,
-		J2: 5770,
-		J3: 5880,
-		S1: 5660,
-		S2: 5695,
-		S3: 5735,
-		S4: 5770,
-		S5: 5805,
-		S6: 5839,
-		S7: 5878,
-		S8: 5914,
-		O1: 5669,
-		O2: 5705,
-		O3: 5768,
-		O4: 5804,
-		O5: 5839,
-		O6: 5876,
-		O7: 5912,
-		Q1: 5677,
-		Q2: 5794,
-		Q3: 5902,
 	},
 	getFObjbyFData: function(fData) {
 		var keyNames = Object.keys(this.frequencies);
@@ -2296,11 +2559,11 @@ var freq = {
 
 		if (fstring == "n/a") {
 			return {
-				key: __("X"),
+				key: '**',
 				fString: "n/a",
 				band: null,
 				channel: null,
-				frequency: frequency
+				frequency: null
 			}
 		}
 		var regex = /([A-Za-z]*)([0-9]*):([0-9]{4})/;
@@ -2345,7 +2608,7 @@ var freq = {
 			}
 		}
 		return {
-			key: __("X"),
+			key: '**',
 			fString: "n/a",
 			band: null,
 			channel: null,
@@ -2358,7 +2621,8 @@ var freq = {
 		for (var i in keyNames) {
 			output += '<option value="' + keyNames[i] + ':' + this.frequencies[keyNames[i]] + '">' + keyNames[i] + ' ' + this.frequencies[keyNames[i]] + '</option>';
 		}
-		output += '<option value="n/a">' + __('N/A') + '</option>';
+		// shown when a seat is on a non-standard frequency, but never offered in the list
+		output += '<option value="n/a" hidden>' + __('Custom') + '</option>';
 		return output;
 	},
 	/*

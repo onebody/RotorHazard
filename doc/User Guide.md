@@ -63,9 +63,17 @@ This page is for adjusting event-specific parameters.
 #### Event
 Event information is displayed to users, such as on the home page when users first connect to the system or at the top of the Results page.
 
+_Event Name_ and _Event Description_ are the event information shown to users; the description accepts Markdown.
+
+_Archive/New Event_ starts a new event. Choose the _Items to Clear_ (races, or races together with heats, classes, pilots or race formats). _Archive Event_ first saves all current data to the _Event Archive_, using the event name as the file name, then clears the chosen items and gives the new event a default name and an empty description. _Clear Data Only_ clears the chosen items without saving a copy, which cannot be undone.
+
 _Consecutive Laps Base_ sets the number of laps which RotorHazard calculates for its Consecutive Laps race formats and results.
 
-_Minimum Lap Time_ and _Minimum Lap Behavior_ change how RotorHazard highlights or discards short passes. _Minimum Lap Time_ changes the threshold under which will activate the _Minimum Lap Behavior_. Use the "discard" behavior with caution, as this will eliminate data that may have been valid.
+_Minimum Lap Time_ and _Minimum Lap Behavior_ change how RotorHazard handles short passes. _Minimum Lap Time_ is the threshold (in seconds) under which the _Minimum Lap Behavior_ applies: _Highlight short laps_ keeps short laps and highlights them, _Discard new short laps_ discards them as they are recorded, and _Ignore lower peaks_ keeps only the crossing with the strongest signal peak among crossings that are closer together than the minimum lap time. Use the "discard" behavior with caution, as this will eliminate data that may have been valid.
+
+_Ignore Crossings Before_ discards a pilot's first crossing of the race if it comes sooner than this many seconds after the race start.
+
+_Event Archive_ lists the event databases saved on the timer (archived events and database backups). _Restore Event_ replaces all current data with the selected event, after a confirmation. _Delete Event_ removes the selected file, which cannot be undone. _Download Event Database_ downloads the selected file.
 
 #### Pilots
 Add an entry for each pilot that will race. The system will announce pilots based on their callsign. A phonetic spelling for a callsign may be used to influence the voice callouts; it is not required.
@@ -83,6 +91,7 @@ Classes are groups of heats and races that share common characteristics. Each cl
 Classes may be given a name and description in addition to other properties:
 - _Race Format_: if selected, this race format is force-applied to all races in the class
 - _Ranking_: method by which this class is ranked. May be extended by plugins
+- _Round Type_: determines how rounds are counted within the class; see [Round Types](#round-types)
 - _Rounds_: number of rounds after which RotorHazard considers the heat to be done; leave at 0 to continue running this class until another is manually chosen
 - _Advance Heat_: determines whether RotorHazard will automatically move to the next heat when a race in this class concludes
 
@@ -98,6 +107,16 @@ If any of the slots uses either "Heat" or "Class" method, or if "Auto Frequency"
 A dynamically seeded heat can be in the "Plan" or "Seeded" state. A newly created heat is in the Plan state, and a race cannot be run until the heat is seeded. You may seed a heat using the "Seed Now" button, which will pull the current results from any selected heats and classes to create pilot assignments. If "Auto Frequency" is on, slots (and frequencies) are also assigned during this step. Plan heats are seeded when selected on the [Run](#run) page. If you confirm the assignments shown, the heat becomes seeded. Seeded heats that have not yet been used to run a race can be switched back to the "Plan" state using the "Revert to Plan" button. Note that seeding is not deterministic; reseeding may not produce the same results.
 
 As you run races, classes and heats will become locked and cannot be modified. This protects saved race data from becoming invalid. You may unlock heats and classes to modify their data. If you do, you are rewriting race history for those heats and classes as if they were set up from the beginning. _If you wish to make a change to a heat going forward only and without affecting race history, duplicate the heat to create a new one._ Clearing races from the event will unlock all heats and classes.
+
+##### Round Types
+
+**Count races per heat** is the default. Each heat is a fixed lineup flown repeatedly, and its round number is the number of times it has been raced. Heats A, B and C run as A, B, C, A, B, C…, recording round 2 on the second pass.
+
+**Generate heat groups** treats each heat as belonging to a single round. You build the lineups once and RotorHazard duplicates them per round: saving a race creates a copy of that heat in the next round and deactivates the one just flown, unless the class has reached its _Rounds_ count. Each heat carries a group number, shown as "Round 1", "Round 2" and so on beside the heat name on the Format page, and heats advance in round order — all of round 1, then all of round 2.
+
+Use heat groups when rounds need to be editable individually: a later round's pilots can be changed without touching rounds already flown, and a round can be seeded from the previous one using the "Heat" or "Class" slot methods.
+
+Note that a heat added after racing has begun is created in round 1 and will repeat until it catches up with the others; to add pilots mid-event it is usually easier to rebuild the class's heats.
 
 #### Generators
 
@@ -201,9 +220,9 @@ The "%COOP_RACE_INFO%" and "%COOP_RACE_LAP_TOTALS%" variables can be used in cal
 
 #### Data Management
 
-_Stored Data_ can be used to backup the current database (save to a file on the pi and prompt to download it) or restore events from stored data files
+_Backup/Download Database_ can be used to backup the current database (save to a file on the pi and prompt to download it)
 
-_Reset_ may clear races, classes, heats, pilots, and race formats
+_View Deleted Rounds_ appears when rounds have been deleted on the [Marshal](#marshal) page, and lists them; "Restore" puts a deleted round back if its heat, round number, class, format and pilots still fit
 
 _Import_ uses plugins to extract data from files and fill event values
 
@@ -246,52 +265,77 @@ For example, you might add the "Speak" effect to the "Pilot Done" event in order
 
 The variables listed below may be used for the  effects.
 
-| Variable                  | Description                                                             |
-|---------------------------|-------------------------------------------------------------------------|
-| %PILOT%                   | Pilot callsign                                                          |
-| %HEAT%                    | Current heat name or ID value                                           |
-| %ROUND%                   | Current round number                                                    |
-| %ROUND_CALL%              | Current round number (with prompt)                                      |
-| %RACE_FORMAT%             | Current race format                                                     |
-| %LAP_COUNT%               | Current lap number                                                      |
-| %LAST_LAP%                | Last lap time for pilot                                                 |
-| %AVERAGE_LAP%             | Average lap time for pilot                                              |
-| %FASTEST_LAP%             | Fastest lap time                                                        |
-| %TIME_BEHIND_CALL%        | Amount of time behind race leader (with prompt)                         |
-| %TIME_BEHIND_FINPOS_CALL% | Pilot NAME finished at position X, MM:SS.SSS behind                     |
-| %TIME_BEHIND_FINPLACE_CALL% | Pilot NAME finished in X place, MM:SS.SSS behind                      |
-| %FASTEST_SPEED%           | Fastest speed for pilot                                                 |
-| %CONSECUTIVE%             | Fastest consecutive laps for pilot                                      |
-| %TOTAL_TIME%              | Total time since start of race for pilot                                |
-| %TOTAL_TIME_LAPS%         | Total time since start of first lap for pilot                           |
-| %POSITION%                | Race position for pilot                                                 |
-| %POSITION_CALL%           | Race position for pilot (with prompt)                                   |
-| %POSITION_PLACE%          | Race position (first, second, etc) for pilot                            |
-| %POSITION_PLACE_CALL%     | Race position (first, second, etc) for pilot (with prompt)              |
-| %FASTEST_RACE_LAP%        | Pilot/time for fastest lap in race                                      |
-| %FASTEST_RACE_LAP_CALL%   | Pilot/time for fastest lap in race (with prompt)                        |
-| %FASTEST_RACE_SPEED%      | Pilot/speed for fastest speed in race                                   |
-| %FASTEST_RACE_SPEED_CALL% | Pilot/speed for fastest speed in race (with prompt)                     |
-| %WINNER%                  | Pilot callsign for winner of race                                       |
-| %WINNER_CALL%             | Pilot callsign for winner of race (with prompt)                         |
-| %PREVIOUS_WINNER%         | Pilot callsign for winner of previous race                              |
-| %PREVIOUS_WINNER_CALL%    | Pilot callsign for winner of previous race (with prompt)                |
-| %PILOTS%                  | List of pilot callsigns (read out slower)                               |
-| %LINEUP%                  | List of pilot callsigns (read out faster)                               |
-| %FREQS%                   | List of pilot callsigns and frequency assignments                       |
-| %LEADER%                  | Callsign of pilot currently leading race                                |
-| %LEADER_CALL%             | Callsign of pilot currently leading race, in the form "NAME is leading" |
-| %SPLIT_TIME%              | Split time for pilot (see [Secondary / Split Timers](../doc/Cluster.md) doc)          |
-| %SPLIT_SPEED%             | Split speed for pilot (see [Secondary / Split Timers](../doc/Cluster.md) doc)         |
-| %RACE_RESULT%             | Race result status message (race winner or co-op result)                |
-| %COOP_RACE_INFO%          | Co-op race mode information (target time or laps)                       |
-| %COOP_RACE_LAP_TOTALS%    | Pilot lap counts for race in co-op mode                                 |
-| %CURRENT_TIME_AP%         | Current time (12-hour clock)                                            |
-| %CURRENT_TIME_24%         | Current time (24-hour clock)                                            |
-| %CURRENT_TIME_SECS_AP%    | Current time, with seconds (12-hour clock)                              |
-| %CURRENT_TIME_SECS_24%    | Current time, with seconds (24-hour clock)                              |
-| %DELAY_#_SECS%            | Delay voice callout by given number of seconds                          |
-| %PILOTS_INTERVAL_#_SECS%  | List of callsigns separated by interval seconds (must be only variable) |
+| Variable                  | Description                                                                             |
+|---------------------------|-----------------------------------------------------------------------------------------|
+| %PILOT%                   | Pilot callsign                                                                          |
+| %HEAT%                    | Current heat name or ID value                                                           |
+| %ROUND%                   | Current round number                                                                    |
+| %ROUND_CALL%              | Current round number (with prompt)                                                      |
+| %RACE_FORMAT%             | Current race format                                                                     |
+| %LAP_COUNT%               | Current lap number for pilot                                                            |
+| %LAP_COUNT_CALL%          | Current lap number for pilot (with "lap" or "laps")                                     |
+| %LAST_LAP%                | Last lap time for pilot                                                                 |
+| %LAST_LAP_CALL%           | Last lap time for pilot (with prompt)                                                   |
+| %AVERAGE_LAP%             | Average lap time for pilot                                                              |
+| %AVERAGE_LAP_CALL%        | Average lap time for pilot (with prompt)                                                |
+| %FASTEST_LAP%             | Fastest lap time for pilot                                                              |
+| %FASTEST_LAP_CALL%        | Fastest lap time for pilot (with prompt)                                                |
+| %TIME_BEHIND%             | Amount of time behind race leader                                                       |
+| %TIME_BEHIND_CALL%        | Amount of time behind race leader (with prompt)                                         |
+| %TIME_BEHIND_FINPOS_CALL% | Pilot NAME finished at position X, MM:SS.SSS behind                                     |
+| %TIME_BEHIND_FINPLACE_CALL% | Pilot NAME finished in X place, MM:SS.SSS behind                                        |
+| %FASTEST_SPEED%           | Fastest speed for pilot                                                                 |
+| %FASTEST_SPEED_CALL%      | Fastest speed for pilot (with prompt)                                                   |
+| %LAST_SPEED%              | Last speed for pilot                                                                    |
+| %LAST_SPEED_CALL%         | Last speed for pilot (with prompt)                                                      |
+| %CONSECUTIVE%             | Fastest consecutive laps for pilot                                                      |
+| %TOTAL_TIME%              | Total time since start of race for pilot                                                |
+| %TOTAL_TIME_LAPS%         | Total time since start of first lap for pilot                                           |
+| %POSITION%                | Race position for pilot                                                                 |
+| %POSITION_CALL%           | Race position for pilot (with prompt)                                                   |
+| %POSITION_PLACE%          | Race position (first, second, etc) for pilot                                            |
+| %POSITION_PLACE_CALL%     | Race position (first, second, etc) for pilot (with prompt)                              |
+| %FASTEST_RACE_LAP%        | Pilot/time for fastest lap in race                                                      |
+| %FASTEST_RACE_LAP_CALL%   | Pilot/time for fastest lap in race (with prompt)                                        |
+| %FASTEST_RACE_SPEED%      | Pilot/speed for fastest speed in race                                                   |
+| %FASTEST_RACE_SPEED_CALL% | Pilot/speed for fastest speed in race (with prompt)                                     |
+| %FASTEST_EVENT_LAP%       | Pilot/time for fastest lap of the event                                                 |
+| %FASTEST_EVENT_LAP_CALL%  | Pilot/time for fastest lap of the event (with prompt)                                   |
+| %FASTEST_EVENT_SPEED%     | Pilot/speed for fastest speed of the event                                              |
+| %FASTEST_EVENT_SPEED_CALL% | Pilot/speed for fastest speed of the event (with prompt)                                |
+| %FASTEST_EVENT_LAP_PILOT% | Fastest lap time of the event for pilot                                                 |
+| %FASTEST_EVENT_LAP_PILOT_CALL% | Pilot/time for fastest lap of the event for pilot, with heat and round (with prompt)    |
+| %FASTEST_EVENT_SPEED_PILOT% | Fastest speed of the event for pilot                                                    |
+| %FASTEST_EVENT_SPEED_PILOT_CALL% | Pilot/speed for fastest speed of the event for pilot, with heat and round (with prompt) |
+| %RACES_WON_PILOT%         | Number of races won by pilot (all saved races)                                          |
+| %RACES_WON_PILOT_CALL%    | Number of races won by pilot, as "NAME has won N races"                                 |
+| %LAPS_EVENT_PILOT%        | Number of laps flown by pilot over the event (saved races and the race in progress)     |
+| %LAPS_EVENT_PILOT_CALL%   | Number of laps flown by pilot over the event, as "NAME has flown N laps"                |
+| %WINNER%                  | Pilot callsign for winner of race                                                       |
+| %WINNER_CALL%             | Pilot callsign for winner of race (with prompt)                                         |
+| %PREVIOUS_WINNER%         | Pilot callsign for winner of previous race                                              |
+| %PREVIOUS_WINNER_CALL%    | Pilot callsign for winner of previous race (with prompt)                                |
+| %RACE_TIME%               | Current race-clock time (empty if no race in progress)                                  |
+| %RACE_TIME_CALL%          | Current race-clock time, tenths only under a minute (with prompt)                       |
+| %PILOTS%                  | List of pilot callsigns (read out slower)                                               |
+| %LINEUP%                  | List of pilot callsigns (read out faster)                                               |
+| %FREQS%                   | List of pilot callsigns and frequency assignments                                       |
+| %LEADER%                  | Callsign of pilot currently leading race                                                |
+| %LEADER_CALL%             | Callsign of pilot currently leading race, in the form "NAME is leading"                 |
+| %SPLIT_TIME%              | Split time for pilot (see [Secondary / Split Timers](../doc/Cluster.md) doc)            |
+| %SPLIT_SPEED%             | Split speed for pilot (see [Secondary / Split Timers](../doc/Cluster.md) doc)           |
+| %RACE_RESULT%             | Race result status message (race winner or co-op result)                                |
+| %RACE_RESULT_CALL%        | Full race result: winner, then each finisher with place and gap                         |
+| %RACE_STATUS%             | Race state as one word (staging, racing, overtime, finished, stopped)                   |
+| %RACE_STATUS_CALL%        | Race state and progress, shaped for timed, lap and co-op races                          |
+| %COOP_RACE_INFO%          | Co-op race mode information (target time or laps)                                       |
+| %COOP_RACE_LAP_TOTALS%    | Pilot lap counts for race in co-op mode                                                 |
+| %CURRENT_TIME_AP%         | Current time (12-hour clock)                                                            |
+| %CURRENT_TIME_24%         | Current time (24-hour clock)                                                            |
+| %CURRENT_TIME_SECS_AP%    | Current time, with seconds (12-hour clock)                                              |
+| %CURRENT_TIME_SECS_24%    | Current time, with seconds (24-hour clock)                                              |
+| %DELAY_#_SECS%            | Delay voice callout by given number of seconds                                          |
+| %PILOTS_INTERVAL_#_SECS%  | List of callsigns separated by interval seconds (must be only variable)                 |
 
 #### LED Effects
 Choose a visual effect for each timer event. The timer will display this effect when the event occurs, immediately overriding any existing display or effect. Some visual effects are only available on particular timer events. Some visual effects are modified by the event, most notably the color of gate crossing enters/exits. Most effects can be previewed through the LED Control panel.
@@ -340,15 +384,21 @@ The Callout panel may be used to configure voice callouts, which can be triggere
 
 Adjust results of saved races.
 
-Select the round, heat, and pilot to adjust. Enter and Exit points are automatically loaded from the saved race data. Adjust the Enter and Exit points to recalibrate the race after the fact. "Load from Node" to copy current live calibration data over the active values. "Save to Node" to copy the active values over the current live values. "Recalculate Race" to use the active Enter/Exit values as calibration points for a "re-run" of the race. This will erase current laps and replace them with the recalculated information. Manually entered laps are preserved.
+Select the round, heat, and pilot to adjust. Enter and Exit points are automatically loaded from the saved race data. Adjust the Enter and Exit points to recalibrate the race after the fact. "Load from Node" to copy current live calibration data over the active values. "Save to Node" to copy the active values over the current live values. "Recalculate Race" to use the active Enter/Exit values as calibration points for a "re-run" of the race. This will erase current laps and replace them with the recalculated information. Manually entered laps are preserved. "Auto Adjust" analyzes the RSSI data and sets the Enter and Exit points to suggested values: above everything seen away from the gate passes and below the weakest pass, with the pair that gives the cleanest set of laps chosen. Nothing is saved until "Commit Changes"; use "Discard Changes" to return to the stored values.
 
 Add laps by entering the crossing time in seconds from the beginning of the race, then pressing the "Add Lap" button.
 
 Delete laps with the "×" button on the unwanted lap. Deleted laps are removed from calculations but remain present in the data for later reference. "Discard Laps" to permanently remove the data from the database.
 
-You may click on/touch the graph to set enter/exit points, activate recalculation, and highlight specific laps. Clicking on laps in the list also adds a highlight on the graph. Press <kbd>delete</kbd> or <kbd>x</kbd> to delete a highlighted lap. Active laps are displayed in green, and deleted laps change to red. The width of the lap indicator shows the enter/exit points, and the yellow highlight draws a line at the exact lap time within that window.
+Drag up or down on the graph to set the Enter and Exit points (whichever line is nearer where the drag starts moves); the laps are recalculated as it moves. Click on/touch the graph to highlight the nearest lap; clicking on laps in the list also adds a highlight on the graph. Press <kbd>delete</kbd> or <kbd>x</kbd> to delete a highlighted lap (not while typing in a field). Active laps are displayed in green, and deleted laps change to red. The width of the lap indicator shows the enter/exit points, and the yellow highlight draws a line at the exact lap time within that window.
+
+The graph shows all of the recorded RSSI data, including any from before the race start, which is shaded like the time after the finish (times before the start are negative). The graph can be zoomed to part of the race to inspect individual passes. Turn the mouse wheel over the graph, or pinch on a touch screen or touchpad, to zoom in or out around that point, and drag left or right to move along the race. The arrow button above the graph opens the zoom controls: "Graph from" and "to" set the visible range in seconds, "+" and "−" zoom in and out around the middle, "Full Race" shows the whole race again, and the arrow buttons go to the start, move a quarter of the view left or right, or go to the end. While zoomed in with the controls closed, the visible range is shown beside the button. Highlighting a lap outside the visible range moves the view to it.
+
+A long press on the graph (half a second) switches the data points on or off. While they are on, white dots mark each RSSI reading, and pausing the mouse pointer near the line shows the time (in seconds from the start of the race) and RSSI value of the nearest reading, which update as the pointer moves along the line. The data points are off when the page is loaded. Each reading is a single RSSI sample, while a lap's timestamp is the middle of its peak, so it can fall between two readings.
 
 "Commit changes" when you are finished adjusting the race data to save it to the database and update the race results.
+
+"Delete This Round" removes the selected round of the heat, for all pilots, after a confirmation. When a heat in a class using heat groups loses its only race, the heat can be raced again. The message shown after a round is deleted includes a "click here" link that restores the round, after a confirmation (or says why it can no longer be restored). Deleted rounds can also be restored later with "View Deleted Rounds" under [Data Management](#data-management) on the Format page.
 
 <br/>
 

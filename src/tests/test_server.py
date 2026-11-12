@@ -1,10 +1,14 @@
 '''python -m unittest discover'''
+import inspect
 import os
+import re
 import sys
+import json
 import tempfile
 import unittest
 import gevent
 from datetime import datetime
+from flask import render_template_string
 from flask.blueprints import Blueprint
 
 _TESTS_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -36,6 +40,7 @@ from Node import Node
 from RHUI import UIField, UIFieldType
 from eventmanager import Evt
 from Database import LapSource
+import frequencies
 
 class ServerTest(unittest.TestCase):
     def setUp(self):
@@ -309,8 +314,28 @@ class ServerTest(unittest.TestCase):
 
     def test_api_root(self):
         self.assertEqual(server.RHAPI.API_VERSION_MAJOR, 1)
-        self.assertEqual(server.RHAPI.API_VERSION_MINOR, 7)
+        self.assertEqual(server.RHAPI.API_VERSION_MINOR, 12)
         self.assertEqual(server.RHAPI.__, server.RHAPI.language.__)
+
+    def test_interface_api_add_kept(self):
+        # an interface a plugin adds while loading must survive the server's interface setup
+        import MockInterface
+        plugin_interface = MockInterface.MockInterface(config=server.RaceContext.serverconfig, num_nodes=2)
+        server.RaceContext.interface.clear_interfaces()  # as at the start of 'rh_program_initialize()'
+        server.RHAPI.interface.add(plugin_interface)
+        server.initialize_rh_interface()
+        mapped = [ifmeta.interface for ifmeta in server.RaceContext.interface.mapped_interfaces]
+        self.assertIn(plugin_interface, mapped)
+        for node in plugin_interface.nodes:
+            self.assertIn(node, server.RaceContext.interface.nodes)
+        self.assertEqual(server.RaceContext.race.num_nodes, len(server.RaceContext.interface.nodes))
+
+    def test_interfaces_not_accumulated(self):
+        num_interfaces = len(server.RaceContext.interface.mapped_interfaces)
+        num_nodes = len(server.RaceContext.interface.nodes)
+        server.rh_program_initialize(reg_endpoints_flag=False)
+        self.assertEqual(len(server.RaceContext.interface.mapped_interfaces), num_interfaces)
+        self.assertEqual(len(server.RaceContext.interface.nodes), num_nodes)
 
     def test_ui_api(self):
         panels = server.RHAPI.ui.register_panel('test_panel', "Test Panel", 'test_page', 1)
@@ -634,6 +659,59 @@ class ServerTest(unittest.TestCase):
 
         server.RHAPI.events.off(Evt.LAPS_RESAVE, 'test_pilotrun_alter_listener')
 
+    def test_calibration_suggestion(self):
+        import json
+        import calibration
+        # three clean gate passes over a flat noise floor
+        start = 1000.0
+        values, times = [], []
+        for tenth in range(0, 900):
+            t = tenth / 10.0
+            rssi = 45 + (tenth % 3)
+            for pass_time in (5.0, 35.0, 65.0):
+                if abs(t - pass_time) <= 1.5:
+                    rssi = 110 - int(abs(t - pass_time) * 30)
+            values.append(rssi)
+            times.append(start + t)
+        result = calibration.suggest_calibration(values, times, start, True, 0, 10000, 0, 0)
+        self.assertIsNotNone(result)
+        self.assertEqual(result['lap_count'], 3)
+        self.assertTrue(47 < result['exit_at'] < result['enter_at'] < 110)
+        stamps = [lap['lap_time_stamp'] / 1000.0 for lap in result['laps'] if not lap['deleted']]
+        for stamp, pass_time in zip(stamps, (5.0, 35.0, 65.0)):
+            self.assertAlmostEqual(stamp, pass_time, delta=0.5)
+        self.assertIsNone(calibration.suggest_calibration([45, 46, 47] * 100, [start + i / 10.0 for i in range(300)],
+                                                          start, True, 0, 10000, 0, 0))
+
+        # the same trace stored on a saved pilot run, through RHAPI and the socket event
+        pilot = server.RHAPI.db.pilot_add()
+        heat = server.RHAPI.db.heat_add()
+        server.RHAPI.db.slot_alter(server.RHAPI.db.slots_by_heat(heat.id)[0].id, pilot=pilot.id)
+        server.RHAPI.race.raceformat = server.RHAPI.db.raceformat_add(name='no time limit', unlimited_time=1).id
+        server.RHAPI.race.heat = heat.id
+        server.RaceContext.race.stage(immediate=True)
+        server.RHAPI.race.stop()
+        server.RHAPI.race.save()
+        race = server.RHAPI.db.races[-1]
+        run = server.RHAPI.db.pilotruns_by_race(race.id)[0]
+        with server.RaceContext.rhdata.get_db_session_handle():
+            stored_run = server.RaceContext.rhdata.get_savedPilotRace(run.id)
+            stored_run.history_values = json.dumps(values)
+            stored_run.history_times = json.dumps([t - start + race.start_time for t in times])
+            server.RaceContext.rhdata.commit()
+        api_result = server.RHAPI.db.pilotrun_suggest_calibration(run.id)
+        self.assertEqual(api_result, {'enter_at': result['enter_at'], 'exit_at': result['exit_at'], 'lap_count': 3})
+
+        self.client.get_received()
+        self.client.emit('suggest_calibration', {'pilotrace_id': run.id, 'node': run.node_index})
+        replies = [r['args'][0] for r in self.client.get_received() if r['name'] == 'calibration_suggestion']
+        self.assertEqual(len(replies), 1)
+        self.assertEqual(replies[0]['pilotrace_id'], run.id)
+        self.assertEqual((replies[0]['enter_at'], replies[0]['exit_at'], replies[0]['lap_count']),
+                         (result['enter_at'], result['exit_at'], 3))
+
+        server.RHAPI.db.races_clear()  # a saved race would block the heat/pilot delete tests
+
     def test_resave_laps_socket(self):
         pilot = server.RHAPI.db.pilot_add()
         heat = server.RHAPI.db.heat_add()
@@ -721,6 +799,85 @@ class ServerTest(unittest.TestCase):
         readings = sensor.getReadings()
         self.assertEqual(readings['counter']['value'], count+1)
 
-        
+    def test_set_frequency_fills_band_channel(self):
+        self.client.emit('set_frequency', {'node': 0, 'frequency': 5800})
+        freqs = json.loads(server.RaceContext.race.profile.frequencies)
+        self.assertEqual((freqs['b'][0], freqs['c'][0], freqs['f'][0]), ('F', 4, 5800))
+
+    def test_fill_frequency_bands(self):
+        rhdata = server.RaceContext.rhdata
+        profile = rhdata.get_profile(server.RaceContext.race.profile.id)
+        # stored directly, as an older database holds it; alter_profile() would fill it in
+        profile.frequencies = json.dumps({'b': [None, 'B', None, 0], 'c': [None, 8, None, 0],
+                                          'f': [5658, 5866, 0, 5800]})
+        rhdata.commit()
+        self.assertTrue(rhdata.fill_frequency_bands())
+        freqs = json.loads(rhdata.get_profile(profile.id).frequencies)
+        self.assertEqual(freqs['b'][:4], ['R', 'B', None, 'F'])
+        self.assertEqual(freqs['c'][:4], [1, 8, None, 4])
+        self.assertFalse(rhdata.fill_frequency_bands())
+
+    def test_frequency_utils_api(self):
+        utils = server.RHAPI.utils
+        self.assertEqual(utils.band_channel_frequencies['R1'], 5658)
+        self.assertEqual(list(utils.band_channel_frequencies)[:2], ['R1', 'R2'])
+        self.assertEqual(utils.band_channel_for_frequency(5880), ('R', 7))
+        self.assertEqual(utils.band_channel_for_frequency(5555), (None, None))
+        self.assertEqual(utils.frequency_for_band_channel('F', 4), 5800)
+        self.assertEqual(utils.frequency_for_band_channel('U', 0), 5300)
+        self.assertIsNone(utils.frequency_for_band_channel('R', 9))
+        self.assertIsNone(utils.frequency_for_band_channel(None, None))
+
+    def test_frequencyset_alter_fills_band_channel(self):
+        db = server.RHAPI.db
+        set_id = db.frequencysets[0].id
+        db.frequencyset_alter(set_id, frequencies={'b': [None, None], 'c': [None, None], 'f': [5732, 5555]})
+        freqs = json.loads(db.frequencyset_by_id(set_id).frequencies)
+        self.assertEqual(freqs['b'][:2], ['R', None])
+        self.assertEqual(freqs['c'][:2], [3, None])
+
+    def test_page_frequency_table(self):
+        # rendered without a request, as a handled request stops later tests registering blueprints
+        with server.APP.test_request_context('/'):
+            table = render_template_string('{{ freq_table | tojson }}')
+        # in table order, which decides shared frequencies
+        self.assertEqual([tuple(pair) for pair in json.loads(table)],
+                         list(frequencies.BAND_CHANNEL_FREQUENCIES.items()))
+        for layout in ('layout.html', 'layout-basic.html'):
+            source = server.APP.jinja_env.loader.get_source(server.APP.jinja_env, layout)[0]
+            self.assertIn('{{ freq_table | tojson }}.forEach(function (pair) { freq.frequencies[pair[0]] = pair[1]; });', source)
+
+    def test_callout_tokens_registered(self):
+        # every token 'doReplace' substitutes must be in 'ALL_TOKENS', or it would survive
+        #  unfilled and be spoken as raw text
+        import RHData
+        src = inspect.getsource(RHData)
+        used = set(re.findall(r"\.replace\('(%[A-Z_0-9]+%)'", src))
+        # the shared helpers take the value token and derive its '_CALL' name at runtime
+        for token in re.findall(r"replace\w+Tokens\((?:rhapi, )?text, '(%[A-Z_0-9]+%)'", src):
+            used.add(token)
+            used.add(token[:-1] + '_CALL%')
+        self.assertTrue(used, 'found no callout tokens to check')
+        missing = sorted(used - set(RHData.ALL_TOKENS))
+        self.assertEqual(missing, [], 'callout tokens missing from ALL_TOKENS: ' + str(missing))
+        stale = sorted(set(RHData.ALL_TOKENS) - used)
+        self.assertEqual(stale, [], 'ALL_TOKENS entries no longer substituted: ' + str(stale))
+
+    def test_callout_tokens_documented(self):
+        # a token with no User Guide row is invisible to whoever writes the callouts
+        import RHData
+        doc_path = os.path.join(_SRC_DIR, '..', 'doc', 'User Guide.md')
+        with open(doc_path, encoding='utf-8') as doc_file:
+            doc_text = doc_file.read()
+        undocumented = sorted(t for t in RHData.ALL_TOKENS if t not in doc_text)
+        self.assertEqual(undocumented, [],
+                         'callout tokens missing from the User Guide: ' + str(undocumented))
+
+    def test_unfilled_callout_tokens_cleared(self):
+        import RHData
+        # no pilot is named, so the per-pilot tokens have no data
+        text = RHData.doReplace(server.RHAPI, 'Laps %LAP_COUNT% place %POSITION_CALL% done', {}, False)
+        self.assertEqual(text, 'Laps  place  done')
+
 if __name__ == '__main__':
     unittest.main()

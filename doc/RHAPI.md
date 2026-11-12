@@ -874,6 +874,8 @@ The length of lists stored in `frequencies`, `enter_ats`, and `exit_ats` may not
 
 The sentinel value `RHUtils.FREQUENCY_ID_NONE` should be used when no frequency is defined.
 
+When a seat's frequency is a known channel but its band and channel are missing, `db.frequencyset_add` and `db.frequencyset_alter` fill them in (see `utils.band_channel_for_frequency`). Frequency sets already stored are filled in the same way when the server starts.
+
 **Notice:** The frequency set specification is expected to be modified in future versions. Please consider this while developing plugins.
 - Rename class
 - Siimplify serialization for `enter_ats`, `exit_ats`
@@ -985,8 +987,52 @@ Alter race data. Supports only custom attributes. No return value.
 Calculated result set for saved race. Returns `dict`.
 - `race_or_id` (int|SavedRaceMeta): Either the saved race object or the ID of saved race
 
+#### db.race_results_rebuild(race_or_id)
+Rebuild the result caches that include a saved race (the race, its heat and class, and the event) and update connected clients. Call this after adding or changing race data with `db.race_add` and `db.pilotrun_add`, which do not update results themselves. Returns `True`, or `False` if the race was not found.
+- `race_or_id` (int|SavedRaceMeta): Either the saved race object or the ID of saved race
+
+#### db.race_delete(race_or_id, keep_copy=True)
+Delete a saved race with its pilot runs, laps, splits and attributes. Other rounds of the heat are not renumbered or altered. Unless `keep_copy` is `False`, a copy of the race is kept as a deleted race (see below) so it can be restored. Result caches are rebuilt, connected clients are updated and `Evt.RACE_DELETE` is triggered with `race_id`, `heat_id`, `round_id`, `class_id`, `deleted_race_id` (`None` without a copy), `race` (the race data, as from `db.deleted_race_data`) and `next_round` (the heat's next round number after the delete). Returns `True` if the race was deleted, `False` if it was not found or could not be deleted. A race is not deleted while the current race is in its heat and is staging, running or not yet saved or discarded.
+- `race_or_id` (int|SavedRaceMeta): Either the saved race object or the ID of saved race
+- `keep_copy` _(optional)_ (boolean): Keep a copy of the race that can be restored
+
 #### db.races_clear()
-Delete all saved races. No return value.
+Delete all saved races and deleted races. No return value.
+
+
+### Deleted Races
+Copies of saved races deleted with `db.race_delete` or the Marshal page. A deleted race can be restored if its heat, round, class, format and pilots still fit.
+
+Deleted races are represented with the `DeletedRace` class, which has the following properties:
+- `id` (int): Internal identifier
+- `race_id` (int): ID the saved race had
+- `round_id` (int): round number
+- `heat_id` (int): ID of associated heat
+- `class_id` (int): ID of associated race class, or `CLASS_ID_NONE`
+- `format_id` (int): ID of associated race format
+- `start_time_formatted` (string): Human-readable time of race start
+- `deleted_time_formatted` (string): Human-readable time the race was deleted
+- `data` (string): Internal use only; use `db.deleted_race_data`
+
+#### db.deleted_races
+_Read only_
+All deleted race records, newest first. Returns `list[DeletedRace]`.
+
+#### db.deleted_race_by_id(deleted_race_id)
+A single deleted race record, retrieved by ID. Returns `DeletedRace`.
+- `deleted_race_id` (int): ID of deleted race record to retrieve
+
+#### db.deleted_race_data(deleted_race_or_id)
+The stored copy of a deleted race. Returns `dict` with keys `race` (the saved race fields), `attributes` (dict of custom attributes) and `pilotruns` (list of pilot run fields, each with `laps` and `splits` lists), or `None` if not found.
+- `deleted_race_or_id` (int|DeletedRace): Either the deleted race object or the ID of deleted race
+
+#### db.deleted_race_conflicts(deleted_race_or_id)
+Reasons the deleted race cannot be restored as it was, such as its heat no longer existing, its round of the heat already having a race, or a race in its heat being in progress. Returns `list[string]`, empty if the race can be restored, or `None` if not found.
+- `deleted_race_or_id` (int|DeletedRace): Either the deleted race object or the ID of deleted race
+
+#### db.race_restore(deleted_race_or_id)
+Restore a deleted race with its pilot runs, laps, splits and attributes, and remove the deleted race record. The race keeps its former ID if no other race has taken it. Nothing is restored if `db.deleted_race_conflicts` reports any conflict or a step fails. Result caches are rebuilt, connected clients are updated and `Evt.RACE_RESTORE` is triggered with `race_id`, `heat_id`, `round_id`, `class_id`, `deleted_race_id` and `next_round` (the heat's next round number after the restore). Returns `SavedRaceMeta`, or `False` if the race was not restored.
+- `deleted_race_or_id` (int|DeletedRace): Either the deleted race object or the ID of deleted race
 
 
 ### Saved Race &rarr; Pilot Runs
@@ -1017,8 +1063,8 @@ A single pilot run record, retrieved by ID. Returns `SavedPilotRace`.
 Pilot run records matching the provided saved race ID. Returns `list[SavedPilotRace]`.
 - `race_id` (int): ID of saved race used to retrieve pilot runs
 
-#### db.pilotrun_add(race_id, node_index, pilot_id, history_values, history_times, enter_at, exit_at, frequency, laps)
-Add a `SavedPilotRace` directly in the database. Laps must be added during creation. Returns `SavedPilotRace`.
+#### db.pilotrun_add(race_id, node_index, pilot_id, history_values, history_times, enter_at, exit_at, frequency, laps, marshal_type=None, splits=None)
+Add a `SavedPilotRace` directly in the database. Laps and splits must be added during creation. Returns `True`.
 - `race_id` (int): ID of associated saved race
 - `node_index` (int): Seat number
 - `pilot_id` (int): ID of associated pilot
@@ -1028,6 +1074,8 @@ Add a `SavedPilotRace` directly in the database. Laps must be added during creat
 - `exit_at` (int): Gate exit calibration point
 - `frequency` (int): Active frequency for this seat at race time
 - `laps` (list[Crossing]): List of `Crossing` objects to add to this run
+- `marshal_type` _(optional)_ (int): Marshal type of the seat's timing interface
+- `splits` _(optional)_ (list[dict]): Splits to add to this run; each item requires `lap_id`, `split_id`, `split_time_stamp` and `split_time`, and may also include `split_time_formatted`, `split_speed`, `speed_only`
 
 #### db.pilotrun_alter(pilotrace_id, enter_at=None, exit_at=None, laps=None)
 Apply a marshalled correction to an existing `SavedPilotRace`: enter/exit calibration and/or a replacement lap list. Mirrors the behavior of the built-in Marshal page, including clearing dependent result caches and firing `Evt.LAPS_RESAVE`. Fields left as `None` are unchanged. Returns `True` on success, `False` if `pilotrace_id` (or its saved race) does not exist.
@@ -1035,6 +1083,10 @@ Apply a marshalled correction to an existing `SavedPilotRace`: enter/exit calibr
 - `enter_at` (int): Gate enter calibration point
 - `exit_at` (int): Gate exit calibration point
 - `laps` (list[dict]): Replacement lap list; each item requires `lap_time_stamp` and `lap_time`, and may also include `lap_time_formatted` (computed automatically if omitted), `peak_rssi`, `source`, `deleted`
+
+#### db.pilotrun_suggest_calibration(pilotrace_id)
+Suggest EnterAt/ExitAt values for a saved pilot run from its stored RSSI history, as the Marshal page's "Auto Adjust" does: the widest range of EnterAt over which the crossing count holds steady is taken as the gate band, and ExitAt is placed where the recalculated laps are cleanest. Nothing is changed; pass the values to `pilotrun_alter` to apply them. Returns `dict` with `enter_at`, `exit_at` and `lap_count` (the laps a recalculation with those values gives), or `None` if the run has no usable RSSI history or no gate passes stand out.
+- `pilotrace_id` (int): ID of pilot run record
 
 ### Saved Race &rarr; Pilot Run &rarr; Laps
 Laps store data related to start gate crossings. Each pilot run may have one or more laps associated with it. When displaying laps, be sure to reference the associated race format.
@@ -1300,6 +1352,10 @@ _Read/write_
 ID of assigned heat (`int` or `None`). `None` is practice mode.
 To change active heat options, adjust the assigned heat.
 
+#### race.round
+_Read only_
+Round number the next race of the current heat will be saved as (`int`). For a class with round type Heat Groups this is the heat's group number; `0` when no heat is assigned.
+
 #### race.frequencyset
 _Read/write_
 ID of current frequency set (`int`).
@@ -1319,6 +1375,14 @@ Current status of system. Returns `RaceStatus`.
 - `RaceStatus.STAGING`: System is staging, race begins imminently
 - `RaceStatus.RACING`: Racing is underway
 - `RaceStatus.DONE`: System no longer listening for lap crossings, race results must be saved or discarded
+
+#### race.race_time_sec
+_Read only_
+Duration of the current race in seconds, or `0` if the race is not time-limited. Returns `int` (`float` in co-op mode). Taken from the active race format, but co-op racing mode may override it with the heat's best-time value.
+
+#### race.unlimited_time
+_Read only_
+Whether the race clock counts up rather than down to a fixed duration. Returns `int` used as a boolean. Taken from the active race format, but co-op racing mode may override it.
 
 #### race.stage_time_internal
 _Read only_
@@ -1356,10 +1420,20 @@ All lap data. Returns `list[dict]`.
 All lap data, removing deleted laps. Returns `list[dict]`.
 - `filter_late_laps` _(optional)_: Set `True` to also remove laps flagged as late.
 
-#### race.lap_add(seat_index, timestamp)
+#### race.lap_add(seat_index, timestamp, peak=None)
 Add a lap record to the current race. Laps must be entered sequentially. No return value.
 - `seat_index` (int): seat number on which to add lap
 - `timestamp` (int): timestamp of lap to add, in server monotonic time
+- `peak` _(optional)_ (int): peak RSSI of the pass, stored with the lap
+
+#### race.laps_replace(seat_index, laps)
+Replace all laps of a seat in the current race, as the Marshal page does for the current race: laps are renumbered, results recalculated and the lap list broadcast to all clients, and `Evt.RACE_LAPS_REPLACE` is triggered. No return value.
+- `seat_index` (int): seat whose laps to replace
+- `laps` (list[dict]): replacement lap list, in order; each item requires `lap_time_stamp` and `lap_time` (both in milliseconds), and may also include `source` (default `LapSource.API`) and `deleted` (default `False`)
+
+#### race.last_race
+_Read only_
+The saved-off copy of the most recent race, set when the current race is cleared (after a save or a discard) and cleared when the next race is staged. Returns `RHRace`, or `None`.
 
 #### race.results
 _Read only_
@@ -1479,6 +1553,20 @@ These methods are accessed via `RHAPI.interface`
 #### interface.seats
 _Read only_
 Hardware interface information. Returns `list[Node]`.
+
+#### interface.seat_enter_at_set(seat_index, level)
+Set the EnterAt level of a seat on the live node, as the Settings page does: the level is stored in the current profile and broadcast to all clients. No return value.
+- `seat_index` (int): seat to change
+- `level` (int): new EnterAt level
+
+#### interface.seat_exit_at_set(seat_index, level)
+Set the ExitAt level of a seat on the live node, as the Settings page does: the level is stored in the current profile and broadcast to all clients. No return value.
+- `seat_index` (int): seat to change
+- `level` (int): new ExitAt level
+
+#### interface.seat_crossing_end(seat_index)
+End a crossing in progress on a seat, as the server does at race start and stop, so the node reports the pass. Has no effect on nodes whose firmware does not support it. No return value.
+- `seat_index` (int): seat whose crossing to end
 
 
 
@@ -1635,6 +1723,19 @@ Convert HSL color values to a hexadecimal string. Returns `string`.
 #### utils.color_hexstring_to_int(hex_color):
 Convert hexadecimal string color to packed int. Accepts strings with or without "#" prefix. Returns `int`.
 - `hex_color` (string): hexadecimal color string to convert
+
+#### utils.band_channel_frequencies
+_Read only_
+The known video channels and their frequencies, keyed by band and channel ("R1", "F4", ...) in lookup order. Returns `dict` of `string` to `int` (MHz).
+
+#### utils.band_channel_for_frequency(frequency):
+The band and channel of a frequency. Where several channels share a frequency, the first in `utils.band_channel_frequencies` order is used (5880 is "R7"). Returns `tuple` of (`string`, `int`), or (`None`, `None`) for a frequency that is not a known channel.
+- `frequency` (int): frequency in MHz
+
+#### utils.frequency_for_band_channel(band, channel):
+The frequency of a band and channel. Returns `int` (MHz), or `None` if there is no such channel.
+- `band` (string): band designation, such as "R"
+- `channel` (int): channel number
 
 
 

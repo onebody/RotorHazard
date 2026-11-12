@@ -1,6 +1,6 @@
 '''RotorHazard server script'''
-RELEASE_VERSION = "4.5.1-dev.2" # Public release version code
-SERVER_API = 49 # Server API version
+RELEASE_VERSION = "4.6.0-dev.1" # Public release version code
+SERVER_API = 50 # Server API version
 NODE_API_SUPPORTED = 18 # Minimum supported node version
 NODE_API_BEST = 36 # Most recent node API
 JSON_API = 3 # JSON API version
@@ -171,6 +171,7 @@ import socket
 import random
 import string
 import json
+import html
 from pathlib import Path
 
 RHUtils.checkPythonVersion(MIN_PYTHON_MAJOR_VERSION, MIN_PYTHON_MINOR_VERSION)
@@ -186,7 +187,8 @@ import AdminAuth
 import calibration
 import heat_automation
 import RHAPI
-from ClusterNodeSet import SecondaryNode, ClusterNodeSet
+import frequencies
+from ClusterNodeSet import SecondaryNode, ClusterNodeSet, restore_secondary_passwords, mask_secondary_passwords
 import PageCache
 from util.ButtonInputHandler import ButtonInputHandler
 import util.stm32loader as stm32loader
@@ -253,6 +255,14 @@ HEARTBEAT_DATA_RATE_FACTOR = 5
 # cached copy of GENERAL/ADMIN_SOCKET_AUTH; kept in sync by 'on_set_config'
 AdminAuth.set_admin_socket_auth_enabled(RaceContext.serverconfig.get_item('GENERAL', 'ADMIN_SOCKET_AUTH'))
 
+SPEAK_QUEUE_PAUSE_TIMEOUT_SECS = 5  # auto-resume if no priority callout arrives while paused
+AUDIO_HANDOFF_GRACE_SECS = 2  # wait before promoting another tab, so a refreshing owner tab can reclaim
+# per-machine audio tabs: client address -> socket ids of claiming tabs (most recent claim last),
+#  the socket id told it is the owner, and addresses waiting out the hand-off grace period
+AudioClaimants = {}
+AudioOwners = {}
+AudioHandoffPending = set()
+
 ERROR_REPORT_INTERVAL_SECS = 600  # delay between comm-error reports to log
 
 IMDTABLER_JAR_NAME =  PROGRAM_DIR + '/static/IMDTabler.jar'
@@ -312,8 +322,11 @@ Current_log_path_name = log.later_stage_setup(RaceContext.serverconfig.get_secti
 # Callback function invoked when an error-level message is logged
 def log_error_callback_fn(*args):
     if not RaceContext.rhui.is_ui_message_set("errors-logged"):
+        # in server-debug mode the notice can be cleared
+        clear_btn = ' <button class="clear-errors-logged">{}</button>'.format(__('Clear')) \
+                        if RaceContext.serverconfig.get_item('GENERAL', 'DEBUG') else ''
         RaceContext.rhui.set_ui_message("errors-logged",\
-                   f'{__("Error messages have been logged.")} (<a href=\"/hardwarelog?log_level=ERROR\">{__("View error log")}</a>)',\
+                   f'{__("Error messages have been logged.")} (<a href=\"/hardwarelog?log_level=ERROR\">{__("View error log")}</a>)' + clear_btn,\
                    header="Notice", subclass="errors-logged")
         if AdminAuth.Auth_succeeded_flag:
             SOCKET_IO.emit('update_server_messages', RaceContext.rhui.get_ui_server_messages_str())
@@ -567,12 +580,19 @@ def render_marshal():
     return render_template('marshal.html',
         num_nodes=RaceContext.race.num_nodes)
 
+@APP.context_processor
+def inject_frequency_table():
+    '''Band/channel frequency table for the page layouts, which hand it to rotorhazard.js.'''
+    # a list of pairs, since 'tojson' sorts object keys and the order decides shared frequencies
+    return {'freq_table': list(frequencies.BAND_CHANNEL_FREQUENCIES.items())}
+
 @APP.route('/format')
 @requires_auth
 def render_format():
     '''Route to settings page.'''
     return render_template('format.html',
-        num_nodes=RaceContext.race.num_nodes)
+        num_nodes=RaceContext.race.num_nodes,
+        has_deleted_races=RaceContext.rhdata.has_deletedRaces())
 
 @APP.route('/settings')
 @requires_auth
@@ -767,8 +787,11 @@ def render_hardwarelog():
 @APP.route('/database')
 @requires_auth
 def render_database():
-    '''Route to database page.'''
+    '''Route to database page; '?view=deleted' shows only the deleted races.'''
+    if request.args.get('view') == 'deleted':
+        return render_template('database.html', deleted_only=True, deletedRaces=get_deleted_race_rows())
     return render_template('database.html',
+        deleted_only=False,
         pilots=RaceContext.rhdata.get_pilots(),
         heats=RaceContext.rhdata.get_heats(),
         heatnodes=RaceContext.rhdata.get_heatNodes(),
@@ -777,7 +800,37 @@ def render_database():
         savedraceLap=RaceContext.rhdata.get_savedRaceLaps(),
         profiles=RaceContext.rhdata.get_profiles(),
         race_format=RaceContext.rhdata.get_raceFormats(),
-        globalSettings=RaceContext.rhdata.get_options())
+        globalSettings=RaceContext.rhdata.get_options(),
+        deletedRaces=get_deleted_race_rows())
+
+def get_deleted_race_rows():
+    '''Rows for the Deleted Races table on the database page.'''
+    rows = []
+    for deleted_race in RaceContext.rhdata.get_deletedRaces():
+        snapshot = RaceContext.rhdata.get_deletedRace_snapshot(deleted_race) or {}
+        heat = RaceContext.rhdata.get_heat(deleted_race.heat_id)
+        race_class = RaceContext.rhdata.get_raceClass(deleted_race.class_id)
+        race_format = RaceContext.rhdata.get_raceFormat(deleted_race.format_id) if deleted_race.format_id else None
+
+        pilots = []
+        for run in sorted(snapshot.get('pilotruns') or [], key=lambda run: run.get('node_index') or 0):
+            if run.get('pilot_id'):
+                pilot = RaceContext.rhdata.get_pilot(run['pilot_id'])
+                pilots.append(pilot.callsign if pilot else '{0} {1}'.format(__('Pilot'), run['pilot_id']))
+
+        rows.append({
+            'id': deleted_race.id,
+            'deleted': deleted_race.deleted_time_formatted,
+            'race_id': deleted_race.race_id,
+            'heat': heat.display_name if heat else '{0} {1}'.format(__('Heat'), deleted_race.heat_id),
+            'round': deleted_race.round_id,
+            'class': race_class.name if race_class else (deleted_race.class_id or ''),
+            'format': race_format.name if race_format else (deleted_race.format_id or ''),
+            'started': deleted_race.start_time_formatted,
+            'pilots': ', '.join(pilots),
+            'label': get_race_round_label(deleted_race.heat_id, deleted_race.round_id),
+        })
+    return rows
 
 @APP.route('/vrxstatus')
 @requires_auth
@@ -898,6 +951,7 @@ def connect_handler(auth):
 def disconnect_handler(*args):
     '''Emit disconnect event.'''
     logger.debug('Client disconnected')
+    release_audio_claim(request.remote_addr, request.sid, True)
 
 # Cluster events
 
@@ -939,7 +993,13 @@ def on_join_cluster_ex(data=None):
     Events.trigger(Evt.CLUSTER_JOIN, {
                 'message': __('Joined cluster')
                 })
-    RaceContext.cluster.emit_join_cluster_response(SOCKET_IO, RaceContext.serverstate.info_dict)
+    auth_ok = AdminAuth.socketio_auth_ok(RaceContext)
+    if not auth_ok:
+        if request.authorization:
+            logger.warning("Primary timer at {} supplied admin credentials that do not match this timer's; its race commands will be rejected".format(request.remote_addr))
+        else:
+            logger.info("Primary timer at {} joined without admin credentials, which this timer requires".format(request.remote_addr))
+    RaceContext.cluster.emit_join_cluster_response(SOCKET_IO, RaceContext.serverstate.info_dict, auth_ok)
 
 @SOCKET_IO.on('check_secondary_query')
 @catchLogExceptionsWrapper
@@ -1127,6 +1187,8 @@ def on_set_frequency(data):
     frequency = int(data['frequency'])
     band = str(data['band']) if 'band' in data and data['band'] != None else None
     channel = int(data['channel']) if 'channel' in data and data['channel'] != None else None
+    if band is None and channel is None:
+        band, channel = frequencies.band_channel_for(frequency)
 
     if node_index < 0 or node_index >= RaceContext.race.num_nodes:
         logger.info('Unable to set frequency ({0}) on node {1}; node index out of range'.format(frequency, node_index+1))
@@ -1402,6 +1464,8 @@ def on_alter_heat(data):
     else:        # keep time fields in the current race in sync with the current race format
         RaceContext.race.set_race_format_time_fields(RaceContext.race.format, RaceContext.race.current_heat)
         RaceContext.rhui.emit_heat_data()
+        if RaceContext.race.current_heat == heat.id:  # send the new co-op values shown on the Run page
+            RaceContext.rhui.emit_current_heat()
     RaceContext.rhui.emit_race_status()
 
 @SOCKET_IO.on('delete_heat')
@@ -1682,6 +1746,108 @@ def on_alter_race(data):
         message = __('No reassignment made: destination heat same as source')
         RaceContext.rhui.emit_priority_message(message, False, nobroadcast=True)
 
+def get_race_round_label(heat_id, round_id):
+    '''Heat and round of a race for messages; heat names in grouped classes already include the round.'''
+    heat = RaceContext.rhdata.get_heat(heat_id)
+    if not heat:
+        return '{0} {1}, {2} {3}'.format(__('Heat'), heat_id, __('Round'), round_id)
+    race_class = RaceContext.rhdata.get_raceClass(heat.class_id)
+    if race_class and race_class.round_type == Database.RoundType.GROUPED:
+        return heat.display_name
+    return '{0}, {1} {2}'.format(heat.display_name, __('Round'), round_id)
+
+@SOCKET_IO.on('delete_race_round')
+@requires_socketio_auth
+@catchLogExcWithDBWrapper
+def on_delete_race_round(data):
+    '''Delete a saved race round, keeping a copy that can be restored.'''
+    race_id = data.get('race_id')
+    race = RaceContext.rhdata.get_savedRaceMeta(race_id) if race_id is not None else None
+
+    if not race:
+        message = __('That round no longer exists; it may already have been deleted')
+        RaceContext.rhui.emit_priority_message(message, False, nobroadcast=True)
+        emit('race_round_deleted', {'ok': False, 'race_id': race_id})
+        return
+
+    label = get_race_round_label(race.heat_id, race.round_id)
+
+    if RaceContext.rhdata.heat_race_in_progress(race.heat_id):
+        message = __('Cannot delete {0} while a race in that heat is in progress').format(html.escape(label))
+        RaceContext.rhui.emit_priority_message(message, False, nobroadcast=True)
+        emit('race_round_deleted', {'ok': False, 'race_id': race_id})
+        return
+
+    race_db_id = race.id
+    if RaceContext.rhdata.delete_savedRaceMeta(race):
+        # the message links to restoring the copy just made of the race
+        deleted_race = next((d for d in RaceContext.rhdata.get_deletedRaces() if d.race_id == race_db_id), None)
+        if deleted_race:
+            restore_link = '<a href="#" class="restore-deleted-race-link" data-id="{0}" data-label="{1}">{2}</a>'.format(
+                deleted_race.id, html.escape(label), __('click here'))
+            message = __('Deleted {0} (to restore this round, {1})').format(html.escape(label), restore_link)
+        else:
+            message = __('Deleted {0}').format(html.escape(label))
+        RaceContext.rhui.emit_priority_message(message, False)
+
+        RaceContext.rhui.emit_heat_data()
+        RaceContext.rhui.emit_race_list()
+        RaceContext.rhui.emit_result_data()
+        emit('race_round_deleted', {'ok': True, 'race_id': race_id})
+    else:
+        message = __('Unable to delete {0}').format(html.escape(label))
+        RaceContext.rhui.emit_priority_message(message, False, nobroadcast=True)
+        emit('race_round_deleted', {'ok': False, 'race_id': race_id})
+
+def get_deleted_race_restore_problem(deleted_race_id):
+    '''The deleted race, its label, and a message saying why it cannot be restored (None when it can).'''
+    deleted_race = RaceContext.rhdata.get_deletedRace(deleted_race_id) if deleted_race_id is not None else None
+    if not deleted_race:
+        return None, None, __('That deleted race is no longer available to restore')
+
+    label = get_race_round_label(deleted_race.heat_id, deleted_race.round_id)
+    conflicts = RaceContext.rhdata.get_deletedRace_conflicts(deleted_race)
+    if conflicts:
+        return deleted_race, label, __('Cannot restore {0}: {1}').format(html.escape(label), '; '.join(conflicts))
+    return deleted_race, label, None
+
+@SOCKET_IO.on('check_deleted_race')
+@requires_socketio_auth
+@catchLogExcWithDBWrapper
+def on_check_deleted_race(data):
+    '''Replies whether a deleted race can be restored, with a message to the caller when it cannot.'''
+    _deleted_race, _label, problem = get_deleted_race_restore_problem(data.get('id'))
+    if problem:
+        RaceContext.rhui.emit_priority_message(problem, False, nobroadcast=True)
+    return {'ok': not problem}
+
+@SOCKET_IO.on('restore_deleted_race')
+@requires_socketio_auth
+@catchLogExcWithDBWrapper
+def on_restore_deleted_race(data):
+    '''Restore a deleted race, unless anything conflicts with it.'''
+    deleted_race_id = data.get('id')
+    deleted_race, label, problem = get_deleted_race_restore_problem(deleted_race_id)
+    if problem:
+        RaceContext.rhui.emit_priority_message(problem, False, nobroadcast=True)
+        emit('deleted_race_restored', {'ok': False, 'id': deleted_race_id})
+        return
+
+    heat_id = deleted_race.heat_id
+    round_id = deleted_race.round_id
+    if RaceContext.rhdata.restore_deletedRace(deleted_race):
+        message = __('Restored {0}').format(html.escape(label))
+        RaceContext.rhui.emit_priority_message(message, False)
+
+        RaceContext.rhui.emit_heat_data()
+        RaceContext.rhui.emit_race_list()
+        RaceContext.rhui.emit_result_data()
+        emit('deleted_race_restored', {'ok': True, 'id': deleted_race_id, 'heat_id': heat_id, 'round_id': round_id})
+    else:
+        message = __('Unable to restore {0}; see the server log').format(html.escape(label))
+        RaceContext.rhui.emit_priority_message(message, False, nobroadcast=True)
+        emit('deleted_race_restored', {'ok': False, 'id': deleted_race_id})
+
 
 @SOCKET_IO.on('backup_database')
 @requires_socketio_auth
@@ -1840,15 +2006,19 @@ def on_reset_database(data):
     RaceContext.pagecache.set_valid(False)
 
     on_stop_race()
-    on_discard_laps()
-    RaceContext.rhdata.clear_lapSplits()
 
     if with_archive:
         # if this is not a secondary/split timer then try to use event name for backup filename
         bkp_filename = RaceContext.rhdata.get_option('eventName') \
                     if RaceContext.race.format is not RaceContext.serverstate.secondary_race_format else None
-        RaceContext.rhdata.backup_db_file(True, use_filename=bkp_filename)
+        if not RaceContext.rhdata.backup_db_file(True, use_filename=bkp_filename):
+            # leave the data in place if it could not be archived
+            RaceContext.rhui.emit_priority_message(__('Database reset cancelled: unable to archive current data'), True)
+            return
         on_list_backups()
+
+    on_discard_laps()
+    RaceContext.rhdata.clear_lapSplits()
 
     if reset_type == 'races':
         RaceContext.race.reset_current_laps()
@@ -2093,6 +2263,15 @@ def on_restart_server():
 def on_cancel_restart_required():
     '''Cancels the pending-restart-required condition.'''
     RaceContext.serverstate.clear_restart_required()
+
+@SOCKET_IO.on('clear_errors_logged')
+@requires_socketio_auth
+@catchLogExceptionsWrapper
+def on_clear_errors_logged():
+    '''Clears the errors-logged notice; a later error sets it again.'''
+    RaceContext.rhui.clear_ui_message('errors-logged')
+    log.set_log_level_callback(logging.ERROR, log_error_callback_fn)
+    SOCKET_IO.emit('update_server_messages', RaceContext.rhui.get_ui_server_messages_str())
 
 @SOCKET_IO.on('kill_server')
 @requires_socketio_auth
@@ -2785,6 +2964,8 @@ def on_set_option(data):
 @requires_socketio_auth
 @catchLogExceptionsWrapper
 def on_set_config(data):
+    if data['section'] == 'GENERAL' and data['key'] == 'SECONDARIES' and isinstance(data['value'], list):
+        restore_secondary_passwords(data['value'], RaceContext.serverconfig.get_item('GENERAL', 'SECONDARIES'))
     RaceContext.serverconfig.set_item(data['section'], data['key'], data['value'])
     if data['section'] == 'GENERAL' and data['key'] == 'ADMIN_SOCKET_AUTH':
         AdminAuth.set_admin_socket_auth_enabled(data['value'])
@@ -2794,10 +2975,15 @@ def on_set_config(data):
         apply_default_admin_creds_if_blank()
     if data['section'] in ('SECRETS', 'GENERAL'):
         check_default_admin_creds_warning()
+    if data['section'] == 'GENERAL' and data['key'] == 'AUDIO_SINGLE_TAB':
+        refresh_audio_owners()
+    event_value = data['value']
+    if data['section'] == 'GENERAL' and data['key'] == 'SECONDARIES' and isinstance(event_value, list):
+        event_value = mask_secondary_passwords(event_value)
     Events.trigger(Evt.CONFIG_SET, {
         'section': data['section'],
         'key': data['key'],
-        'value': data['value'],
+        'value': event_value,
         })
 
 @SOCKET_IO.on('get_admin_password')
@@ -2813,6 +2999,16 @@ def on_get_admin_password():
     emit('admin_password',
          {'password': RaceContext.serverconfig.get_item('SECRETS', 'ADMIN_PASSWORD')})
 
+@SOCKET_IO.on('get_secondary_password')
+@requires_socketio_credential_auth
+@catchLogExceptionsWrapper
+def on_get_secondary_password(data):
+    '''Sends a secondary timer's stored password to the requesting client only, as for 'get_admin_password'.'''
+    secondaries = RaceContext.serverconfig.get_item('GENERAL', 'SECONDARIES') or []
+    index = RHUtils.getNumericEntry(data, 'index', -1)
+    info = secondaries[index] if 0 <= index < len(secondaries) and isinstance(secondaries[index], dict) else {}
+    emit('secondary_password', {'index': index, 'password': info.get('password') or ''})
+
 @SOCKET_IO.on('set_config_section')
 @requires_socketio_auth
 @catchLogExceptionsWrapper
@@ -2824,9 +3020,14 @@ def on_set_config_section(data):
         apply_default_admin_creds_if_blank()
     if data['section'] in ('SECRETS', 'GENERAL'):
         check_default_admin_creds_warning()
+    if data['section'] == 'GENERAL':
+        refresh_audio_owners()
+    event_value = data['value']
+    if data['section'] == 'GENERAL' and isinstance(event_value, dict) and isinstance(event_value.get('SECONDARIES'), list):
+        event_value = dict(event_value, SECONDARIES=mask_secondary_passwords(event_value['SECONDARIES']))
     Events.trigger(Evt.CONFIG_SET, {
         'section': data['section'],
-        'value': data['value'],
+        'value': event_value,
         })
 
 @SOCKET_IO.on('set_ui_binding_value')
@@ -2868,26 +3069,119 @@ def save_callouts(data):
     RaceContext.serverconfig.set_item('USER', 'voiceCallouts', callouts)
     logger.info('Set all voice callouts')
     logger.debug('Voice callouts set to: {0}'.format(callouts))
+    # sends the new list to the other pages and clients, not the page that saved it
+    emit('callouts', data['callouts'], broadcast=True, include_self=False)
 
 @SOCKET_IO.on('reload_callouts')
 @catchLogExcWithDBWrapper
 def reload_callouts(*args):
     RaceContext.rhui.emit_callouts()
 
+@SOCKET_IO.on('pause_speaking_queue')
+@requires_socketio_auth
+@catchLogExceptionsWrapper
+def on_pause_speaking_queue(*args):
+    '''Holds client speak-queue processing'''
+    RaceContext.rhui.emit_pause_speaking_queue(SPEAK_QUEUE_PAUSE_TIMEOUT_SECS)
+
+@SOCKET_IO.on('resume_speaking_queue')
+@requires_socketio_auth
+@catchLogExceptionsWrapper
+def on_resume_speaking_queue(*args):
+    '''Resumes client speak-queue processing paused by 'pause_speaking_queue'.'''
+    RaceContext.rhui.emit_resume_speaking_queue()
+
+@SOCKET_IO.on('claim_audio')
+@catchLogExceptionsWrapper
+def on_claim_audio(data=None):
+    '''Registers the tab as an audio claimant for its machine; an active claim makes it the owner.'''
+    active = bool(data.get('active')) if isinstance(data, dict) else False
+    addr = request.remote_addr
+    claimants = AudioClaimants.setdefault(addr, [])
+    if request.sid in claimants:
+        if active:
+            claimants.remove(request.sid)
+            claimants.append(request.sid)
+    elif active:
+        claimants.append(request.sid)
+    else:
+        claimants.insert(0, request.sid)
+    if active:
+        AudioHandoffPending.discard(addr)
+    update_audio_owner(addr, request.sid)
+
+@SOCKET_IO.on('release_audio')
+@catchLogExceptionsWrapper
+def on_release_audio(*args):
+    '''Removes the tab from its machine's audio claimants.'''
+    release_audio_claim(request.remote_addr, request.sid, False)
+
+def release_audio_claim(addr, sid, grace_flag):
+    '''Removes a tab from its machine's audio claimants, handing ownership on if it was the owner.'''
+    claimants = AudioClaimants.get(addr)
+    if not claimants or sid not in claimants:
+        return
+    claimants.remove(sid)
+    if AudioOwners.get(addr) == sid:
+        AudioOwners.pop(addr)
+        if grace_flag and claimants:
+            AudioHandoffPending.add(addr)
+            gevent.spawn_later(AUDIO_HANDOFF_GRACE_SECS, finish_audio_handoff, addr)
+            return
+    update_audio_owner(addr)
+
+@catchLogExceptionsWrapper
+def finish_audio_handoff(addr):
+    '''Promotes the most recent remaining claimant once the hand-off grace period ends.'''
+    AudioHandoffPending.discard(addr)
+    update_audio_owner(addr)
+
+def update_audio_owner(addr, reply_sid=None, notify_all=False):
+    '''Makes the machine's most recent claimant its audio owner, telling the tabs whose state changed.'''
+    claimants = AudioClaimants.get(addr)
+    if not claimants:
+        AudioClaimants.pop(addr, None)
+        AudioOwners.pop(addr, None)
+        AudioHandoffPending.discard(addr)
+        return
+    single_flag = RaceContext.serverconfig.get_item('GENERAL', 'AUDIO_SINGLE_TAB')
+    prev_owner = AudioOwners.get(addr)
+    told_sids = set()
+    if addr not in AudioHandoffPending and claimants[-1] != prev_owner:
+        AudioOwners[addr] = claimants[-1]
+        if single_flag:
+            RaceContext.rhui.emit_audio_owner(claimants[-1], True)
+            told_sids.add(claimants[-1])
+            if prev_owner in claimants:
+                RaceContext.rhui.emit_audio_owner(prev_owner, False)
+                told_sids.add(prev_owner)
+    notify_sids = list(claimants) if notify_all else [reply_sid] if reply_sid else []
+    for sid in notify_sids:
+        if sid not in told_sids:
+            RaceContext.rhui.emit_audio_owner(sid, (not single_flag) or sid == AudioOwners.get(addr))
+
+def refresh_audio_owners():
+    '''Tells every claiming tab on every machine whether it plays audio, after the mode changes.'''
+    for addr in list(AudioClaimants.keys()):
+        update_audio_owner(addr, notify_all=True)
+
 @SOCKET_IO.on('play_callout_text')
 @requires_socketio_auth
 @catchLogExcWithDBWrapper
 def play_callout_text(data):
+    priority = data.get('priority', False)  # if set then put at front of client speak queue
     delay_sec_holder = []  # will be filled if "%DELAY_#_SECS%" or %PILOTS_INTERVAL_#_SECS% provided
     message = RHData.doReplace(RHAPI, data['callout'], {}, True, delay_sec_holder)
     if len(delay_sec_holder) <= 0 or not isinstance(delay_sec_holder[0], float):
-        RaceContext.rhui.emit_phonetic_text(message)
+        RaceContext.rhui.emit_phonetic_text(message, priority=priority, resume_queue=priority)
     else:
         if not isinstance(message, list):
-            gevent.spawn_later(delay_sec_holder[0], RaceContext.rhui.emit_phonetic_text, message)
+            gevent.spawn_later(delay_sec_holder[0], RaceContext.rhui.emit_phonetic_text, message,
+                               priority=priority, resume_queue=priority)
         else:
             for i, piece in enumerate(message):
-                gevent.spawn_later(delay_sec_holder[0]*(i+1), RaceContext.rhui.emit_phonetic_text, piece)
+                gevent.spawn_later(delay_sec_holder[0]*(i+1), RaceContext.rhui.emit_phonetic_text, piece,
+                                   priority=priority, resume_queue=priority)
 
 @SOCKET_IO.on('imdtabler_update_freqs')
 @catchLogExceptionsWrapper
@@ -2911,6 +3205,24 @@ def on_retry_secondary(data):
     '''Retry connection to secondary timer.'''
     RaceContext.cluster.retrySecondary(data['secondary_id'])
     RaceContext.rhui.emit_cluster_status()
+
+@SOCKET_IO.on('suggest_calibration')
+@catchLogExcWithDBWrapper
+def on_suggest_calibration(data):
+    '''Replies to the requester with suggested EnterAt/ExitAt for a saved pilot run, or a seat of the current race.'''
+    pilotrace_id = data.get('pilotrace_id')
+    if pilotrace_id is not None:
+        result, reason = RaceContext.calibration.suggest_for_pilotrun(pilotrace_id)
+    else:
+        result, reason = RaceContext.calibration.suggest_for_seat(RHUtils.getNumericEntry(data, 'node', -1))
+    emit('calibration_suggestion', {
+        'pilotrace_id': pilotrace_id,
+        'node': data.get('node'),
+        'enter_at': result['enter_at'] if result else None,
+        'exit_at': result['exit_at'] if result else None,
+        'lap_count': result['lap_count'] if result else None,
+        'reason': reason,
+    })
 
 @SOCKET_IO.on('get_pilotrace')
 @catchLogExcWithDBWrapper
@@ -3631,8 +3943,8 @@ def _do_init_rh_interface():
         logger.exception("Error initializing RH interface")
         return False
 
+# expects the interfaces already cleared, as done at the start of 'rh_program_initialize()'
 def initialize_rh_interface():
-    RaceContext.interface.clear_interfaces()
     if not _do_init_rh_interface():
         return False
     if RaceContext.race.num_nodes == 0:
@@ -3925,6 +4237,9 @@ def rh_program_initialize(reg_endpoints_flag=True):
         # RotorHazard events dispatch
         Events.on(Evt.UI_DISPATCH, 'ui_dispatch_event', RaceContext.rhui.dispatch_quickbuttons, {}, 50)
 
+        # start from no interfaces, so plugins can add theirs as they load
+        RaceContext.interface.clear_interfaces()
+
         # Plugin handling
         plugin_modules = []
         if os.path.isdir(PROGRAM_DIR + '/bundled_plugins'):
@@ -4192,6 +4507,12 @@ def rh_program_initialize(reg_endpoints_flag=True):
             except Exception as ex:
                 logger.warning('Clearing all data after recovery failure:  ' + str(ex))
                 db_reset()
+
+        # Fill in band and channel for seats whose frequency is a known channel
+        try:
+            RaceContext.rhdata.fill_frequency_bands()
+        except Exception:
+            logger.warning('Unable to fill in frequency bands', exc_info=True)
 
         # Add plugin-registered setting defaults to DB
         RaceContext.rhui.init_setting_defaults()

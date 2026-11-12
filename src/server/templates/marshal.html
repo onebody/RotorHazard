@@ -154,6 +154,26 @@
 		$('#exitat').val(calibration.exit);
 	}
 
+	function viewRange(range) {
+		// show the visible graph range (seconds) without overwriting a field being typed in
+		var fmt = function(v) { return Math.round(v * 10) / 10; };
+		if (!$('#graph-view-from').is(':focus')) {
+			$('#graph-view-from').val(fmt(range.from));
+		}
+		if (!$('#graph-view-to').is(':focus')) {
+			$('#graph-view-to').val(fmt(range.to));
+		}
+		$('#graph-view-from, #graph-view-to')
+			.attr('min', Math.floor(range.min * 10) / 10)
+			.attr('max', Math.ceil(range.max * 10) / 10);
+		// a blank keeps the row's height the same with or without the range
+		$('#graph-view-summary').text(range.zoomed ? `${fmt(range.from)} – ${fmt(range.to)} ${__('secs')}` : ' ');
+		$('#graph-view-reset').prop('disabled', !range.zoomed);
+		$('#graph-view-out').prop('disabled', !range.zoomed);
+		$('#graph-view-start, #graph-view-left').prop('disabled', !range.zoomed || range.from <= range.min);
+		$('#graph-view-end, #graph-view-right').prop('disabled', !range.zoomed || range.to >= range.max);
+	}
+
 	var marshal = new RHMarshal({
 		elements: {
 			graph_canvas_id: 'race-graph',
@@ -172,6 +192,7 @@
 			graphInteractTap: graphInteractTap,
 			recalcRace: recalcRace,
 			calibration: calibration,
+			viewRange: viewRange,
 		},
 	});
 
@@ -182,15 +203,20 @@
 			$('#recalc').prop('disabled', true);
 			$('#load-transitions').prop('disabled', true);
 			$('#save-transitions').prop('disabled', true);
+			$('#auto-calibrate').prop('disabled', true);
+			$('#graph-view-controls button, #graph-view-controls input').prop('disabled', true);
 
 			$('#race-title').html(__('Select Race'));
 			marshal.clearGraph();
 			$('#enterat').val('');
 			$('#exitat').val('');
+			$('#graph-view-from').val('');
+			$('#graph-view-to').val('');
 		}
 		$('#manual-lap-time').prop('disabled', true);
 		$('#add-lap').prop('disabled', true);
 		$('#clean-laps').prop('disabled', true);
+		$('#delete-round').prop('disabled', true);
 		$('#reassign-heat').prop('disabled', true);
 		$('#save-laps').prop('disabled', true);
 	}
@@ -201,9 +227,13 @@
 		$('#recalc').prop('disabled', false);
 		$('#load-transitions').prop('disabled', false);
 		$('#save-transitions').prop('disabled', false);
+		$('#auto-calibrate').prop('disabled', false);
+		$('#graph-view-from, #graph-view-to, #graph-view-in').prop('disabled', false);
+		marshal.notifyViewRange(); // sets zoom-out/reset state
 		$('#manual-lap-time').prop('disabled', false);
 		$('#add-lap').prop('disabled', false);
 		$('#clean-laps').prop('disabled', false);
+		$('#delete-round').prop('disabled', false);
 		$('#save-laps').prop('disabled', false);
 		$('#reassign-heat').prop('disabled', false);
 		$('#discard-laps').prop('disabled', false);
@@ -211,7 +241,35 @@
 
 	var race_list = {};
 	var race_list_loaded = false;
+	// the selection is restored on a browser refresh; navigating to the page picks the latest race;
+	//  taken now, since selecting a heat overwrites the stored round and pilot
+	var pending_selection = {};
+	try {
+		var nav_entry = performance.getEntriesByType('navigation')[0];
+		if (nav_entry && nav_entry.type == 'reload') {
+			pending_selection = {
+				heat: sessionStorage.getItem('marshal_heat'),
+				round: sessionStorage.getItem('marshal_round'),
+				pilot: sessionStorage.getItem('marshal_pilot'),
+			};
+		}
+	} catch (ex) {  // storage unavailable in a private window
+	}
+
+	function pop_selection(key) {
+		var value = pending_selection[key];
+		pending_selection[key] = null;  // applies to the first selection only
+		return value;
+	}
+
+	function store_selection(key, value) {
+		try {
+			sessionStorage.setItem('marshal_' + key, value);
+		} catch (ex) {
+		}
+	}
 	var race_loaded = false;
+	var load_node_pending = false;
 	var current_race_data = {};
 
 	$(document).ready(function () {
@@ -310,6 +368,30 @@
 				rotorhazard.nodes[i].enter_at_level = msg.enter_at_levels[i];
 				rotorhazard.nodes[i].exit_at_level = msg.exit_at_levels[i];
 			}
+			if (load_node_pending) {
+				load_node_pending = false;
+				if (race_loaded) {
+					var node = current_race_data.node_index;
+					marshal.loadEnterExit(rotorhazard.nodes[node].enter_at_level, rotorhazard.nodes[node].exit_at_level);
+				}
+			}
+		});
+
+		socket.on('calibration_suggestion', function (msg) {
+			if (!race_loaded || msg.pilotrace_id != current_race_data.pilotrace_id) {
+				return;  // a different race was loaded in the meantime
+			}
+			if (msg.enter_at === null) {
+				var reasons = {
+					no_history: __('Auto calibration found no RSSI data for this pilot'),
+					pass_peak_only: __('Auto calibration needs RSSI data, but this node records only pass peaks'),
+					weak_signal: __('Auto calibration found the RSSI signal too weak to show gate passes'),
+					no_gate_passes: __('Auto calibration could not determine valid gate passes in the RSSI data'),
+				};
+				push_message(reasons[msg.reason] || __('Auto calibration could not determine values'));
+			} else {
+				marshal.setEnterExit(msg.enter_at, msg.exit_at);  // fills the fields and recalculates
+			}
 		});
 
 		socket.on('format_data', function (msg) {
@@ -330,10 +412,8 @@
 				}
 
 				// find most recent race
-				var prev_heat = null;
-				if (race_list_loaded) {
-					prev_heat = $('#selected_heat').val();
-				} else {
+				var prev_heat = race_list_loaded ? $('#selected_heat').val() : pop_selection('heat');
+				if (!(prev_heat in race_list.heats)) {  // the stored heat may have been deleted
 					var newest_race = 0;
 					for (var heat in race_list.heats) {
 						for (var round in race_list.heats[heat].rounds) {
@@ -360,12 +440,33 @@
 					$('#selected_round').prop('disabled', false);
 					$('#selected_pilot').prop('disabled', false);
 				}
-				if (prev_heat) {
+				if (pending_restored_round && select_heat_round(pending_restored_round.heat, pending_restored_round.round)) {
+					pending_restored_round = null;
+				} else if (prev_heat) {
 					$('.heat-selector').val(prev_heat);
 					$('#selected_heat').trigger('change');
 				}
 			}
 		}
+
+		// drop race format name from the title if too narrow to fit it
+		function fit_race_title() {
+			var title_el = $('#race-title')[0];
+			var format_el = $(title_el).children('.race-format');
+			if (!format_el.length || !title_el.clientWidth)
+				return;
+			format_el.hide();
+			var bare_height = title_el.offsetHeight;
+			format_el.show();
+			if (title_el.offsetHeight > bare_height)
+				format_el.hide();
+		}
+
+		var fit_timer = null;
+		$(window).on('resize', function() {
+			clearTimeout(fit_timer);
+			fit_timer = setTimeout(fit_race_title, 100);
+		});
 
 		socket.on('race_details', function (msg) {
 			race_args = {
@@ -397,6 +498,7 @@
 				marshal_type: msg.marshal_type
 			}
 			marshal.setPilotData(pilot_args);
+			$('#auto-calibrate').prop('hidden', msg.marshal_type == MARSHAL_TYPE.PASS_PEAK_ONLY);
 
 			marshal.initRace();
 
@@ -405,6 +507,11 @@
 			$( "#selected_round option:selected" ).text() + ' / ' +
 			$( "#selected_pilot option:selected" ).text();
 			$('#race-title').html(header);
+			var format_name = race_args.race_format && race_args.race_format.name ? race_args.race_format.name.trim() : '';
+			if (format_name) {
+				$('#race-title').append($('<span class="race-format"></span>').text(' - ' + format_name));
+			}
+			fit_race_title();
 
 			// fill enter/exit values
 			$('#enterat').val(msg.enter_at);
@@ -454,7 +561,13 @@
 
 		$('#selected_heat').change(function(){
 			$('#reassign-heat-selector').val($(this).val());
-			var prev_round = $('#selected_round').val();
+			// the select holds a placeholder until a heat is chosen, so it is not a previous round
+			var prev_round = race_list_loaded && !$('#selected_round option[value="--"]').length ?
+				$('#selected_round').val() : pop_selection('round');
+			if (pending_round !== null) {
+				prev_round = pending_round;
+				pending_round = null;
+			}
 
 			$('#selected_round').empty();
 
@@ -479,13 +592,14 @@
 				}
 			});
 
+			store_selection('heat', $(this).val());
 			disableUI();
 
 			$('#selected_round').trigger('change');
 		});
 
 		$('#selected_round').change(function(){
-			var prev_pilot = $('#selected_pilot').data('pilot-id');
+			var prev_pilot = $('#selected_pilot').data('pilot-id') || pop_selection('pilot');
 			var prev_sel_pilot_idx = $('#selected_pilot').prop('selectedIndex');
 
 			$('#selected_pilot').empty();
@@ -528,6 +642,7 @@
 				$('#selected_pilot').prop('selectedIndex', prev_sel_pilot_idx);
 			}
 
+			store_selection('round', $(this).val());
 			disableUI();
 
 			$('#selected_pilot').trigger('change');
@@ -540,6 +655,7 @@
 			var pilotrace = race_list.heats[heat].rounds[round].pilotraces[pilot];
 
 			$(this).data('pilot-id', pilotrace.pilot_id);
+			store_selection('pilot', pilotrace.pilot_id);
 
 			load_race();
 		});
@@ -613,6 +729,90 @@
 			}
 		});
 
+		// next higher round in the heat, else the next lower one, else null
+		function round_after_delete(deleted_round) {
+			var rounds = $('#selected_round option').map(function() {
+				return parseInt(this.value);
+			}).get().filter(function(value) {
+				return !isNaN(value) && value != deleted_round;
+			}).sort(function(a, b) {
+				return a - b;
+			});
+			var later = rounds.filter(function(value) { return value > deleted_round; });
+			if (later.length) {
+				return later[0];
+			}
+			return rounds.length ? rounds[rounds.length - 1] : null;
+		}
+
+		var round_before_delete = null;
+		var pending_round = null;  // round for the next heat change to select
+		var pending_restored_round = null;  // restored round waiting for the race list to include it
+
+		// shows the given heat and round if the race list has them; returns whether it did
+		function select_heat_round(heat_id, round_id) {
+			if (!(race_list.heats && heat_id in race_list.heats && round_id in race_list.heats[heat_id].rounds)) {
+				return false;
+			}
+			pending_round = String(round_id);
+			$('.heat-selector').val(String(heat_id));
+			$('#selected_heat').trigger('change');
+			return true;
+		}
+
+		socket.on('deleted_race_restored', function (msg) {
+			if (msg.ok && msg.heat_id !== undefined) {
+				pending_restored_round = null;
+				if (!select_heat_round(msg.heat_id, msg.round_id)) {
+					pending_restored_round = {'heat': msg.heat_id, 'round': msg.round_id};
+				}
+			}
+		});
+
+		$('#delete-round').click(function(){
+			if (race_loaded) {
+				var round_label = $('#selected_heat option:selected').text();
+				if (!$('#selected_round').prop('hidden')) {
+					round_label += ', ' + $('#selected_round option:selected').text();
+				}
+				$('#delete-round-text').text(__('Delete {0} for all pilots?').replace('{0}', round_label));
+				$('#delete-round-confirm-btn').data('race-id', current_race_data.race_id);
+				$.magnificPopup.open({
+					items: {
+						src: '#delete-round-confirm'
+					},
+					type: 'inline'
+				});
+			} else {
+				push_message(__('No race loaded'));
+			}
+		});
+
+		$('#delete-round-confirm-btn').click(function(){
+			var race_id = $(this).data('race-id');
+			$.magnificPopup.close();
+			if (race_id) {
+				$('#delete-round').prop('disabled', true);
+				// preselect the round to show; kept when the updated race list arrives
+				round_before_delete = $('#selected_round').val();
+				var next_round = round_after_delete(parseInt(round_before_delete));
+				if (next_round !== null) {
+					$('#selected_round').val(String(next_round));
+				}
+				socket.emit('delete_race_round', {'race_id': race_id});
+			}
+		});
+
+		socket.on('race_round_deleted', function (msg) {
+			if (!msg.ok) {
+				if (round_before_delete !== null) {
+					$('#selected_round').val(round_before_delete);
+				}
+				$('#delete-round').prop('disabled', !race_loaded);
+			}
+			round_before_delete = null;
+		});
+
 		$(document).on('click', '.delete_lap', function(){
 			marshal.markLapDeleted($(this).data('lapid'));
 		});
@@ -650,10 +850,8 @@
 
 		$('#load-transitions').click(function(){
 			if (race_loaded) {
-				var node = current_race_data.node_index;
-				$('#enterat').val(rotorhazard.nodes[node].enter_at_level);
-				$('#exitat').val(rotorhazard.nodes[node].exit_at_level);
-				marshal.recalcRace();
+				load_node_pending = true;  // applied when the server's enter_and_exit_at_levels reply arrives
+				socket.emit('load_data', {'load_types': ['enter_and_exit_at_levels']});
 			} else {
 				push_message(__('No race loaded'));
 			}
@@ -679,9 +877,82 @@
 			}
 		});
 
+		$('#auto-calibrate').click(function(){
+			if (race_loaded) {
+				socket.emit('suggest_calibration', {
+					'pilotrace_id': current_race_data.race_id !== null ? current_race_data.pilotrace_id : null,
+					'node': current_race_data.node_index,
+				});
+			} else {
+				push_message(__('No race loaded'));
+			}
+		});
+
+		// graph x-range (zoom); the controls panel stays open or closed as last left
+		function setGraphViewOpen(open) {
+			$('#graph-view-panel').toggleClass('open', open);
+			$('#graph-view-controls').prop('hidden', !open);
+			$('#graph-view-toggle').attr('aria-expanded', open ? 'true' : 'false');
+		}
+		var graph_view_open = false;
+		try {
+			graph_view_open = localStorage.getItem('marshal_graph_zoom_open') == '1';
+		} catch (e) {}
+		setGraphViewOpen(graph_view_open);
+		$('#graph-view-toggle').on('click', function() {
+			var open = !$('#graph-view-panel').hasClass('open');
+			setGraphViewOpen(open);
+			try {
+				localStorage.setItem('marshal_graph_zoom_open', open ? '1' : '0');
+			} catch (e) {}
+		});
+
+		$('#graph-view-from, #graph-view-to').on('change', function() {
+			var from = parseFloat($('#graph-view-from').val());
+			var to = parseFloat($('#graph-view-to').val());
+			var range = marshal.getViewRange();
+			if (!marshal.setViewRange(isNaN(from) ? range.from : from, isNaN(to) ? range.to : to)) {
+				marshal.notifyViewRange();
+			}
+		});
+
+		$('#graph-view-in').on('click', function() {
+			marshal.zoomViewRange(0.5);
+		});
+
+		$('#graph-view-out').on('click', function() {
+			marshal.zoomViewRange(2);
+		});
+
+		$('#graph-view-reset').on('click', function() {
+			marshal.resetViewRange();
+		});
+
+		// navigate at the current zoom level
+		$('#graph-view-start').on('click', function() {
+			var range = marshal.getViewRange();
+			marshal.setViewRange(range.min, range.min + (range.to - range.from));
+		});
+
+		$('#graph-view-left').on('click', function() {
+			marshal.panViewRange(-0.25);
+		});
+
+		$('#graph-view-right').on('click', function() {
+			marshal.panViewRange(0.25);
+		});
+
+		$('#graph-view-end').on('click', function() {
+			var range = marshal.getViewRange();
+			marshal.setViewRange(range.max - (range.to - range.from), range.max);
+		});
+
 		// lap list hotkey
 		$(document).on('keyup', function(e) {
-			// keyboard shortcuts
+			// keyboard shortcuts, not applied while typing in a field
+			if ($(e.target).is('input, textarea, select')) {
+				return;
+			}
 			switch (e.key) {
 				case 'Delete':
 				case 'x':
@@ -724,6 +995,27 @@
 			</div>
 
 			<div id="race-view">
+				<div id="graph-view-panel">
+				<button type="button" id="graph-view-toggle" title="{{ __('Graph Zoom') }}" aria-label="{{ __('Graph Zoom') }}" aria-controls="graph-view-controls" aria-expanded="false"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1 L8 5 L3 9 Z" fill="currentColor"/></svg></button>
+				<span id="graph-view-summary">&nbsp;</span>
+				<div id="graph-view-controls" class="control-set" hidden>
+					<label for="graph-view-from">{{ __('Graph from') }}</label>
+					<input type="number" id="graph-view-from" step="0.1" disabled />
+					<label for="graph-view-to">{{ __('to') }}</label>
+					<input type="number" id="graph-view-to" step="0.1" disabled />
+					<span class="graph-view-unit">{{ __('secs') }}</span>
+					<button id="graph-view-in" title="{{ __('Zoom in') }}" disabled>+</button>
+					<button id="graph-view-out" title="{{ __('Zoom out') }}" disabled>&minus;</button>
+					<button id="graph-view-reset" disabled>{{ __('Full Race') }}</button>
+					<span class="graph-view-nav">
+						<button id="graph-view-start" title="{{ __('Go to start') }}" disabled>&#x21E4;</button>
+						<button id="graph-view-left" title="{{ __('Move left by 25%') }}" disabled>&larr;</button>
+						<button id="graph-view-right" title="{{ __('Move right by 25%') }}" disabled>&rarr;</button>
+						<button id="graph-view-end" title="{{ __('Go to end') }}" disabled>&#x21E5;</button>
+					</span>
+				</div>
+				</div>
+
 				<canvas id="race-graph" style="width:100%; height:200px"></canvas>
 
 				<table id="laps">
@@ -750,6 +1042,7 @@
 					<input type="number" id="exitat" value="" placeholder="{{ __('ExitAt') }}" disabled />
 					<button id="load-transitions" hidden disabled>{{ __('Load from Node') }}</button>
 					<button id="save-transitions" hidden disabled>{{ __('Save to Node') }}</button>
+					<button id="auto-calibrate" disabled>{{ __('Auto Adjust') }}</button>
 				</div>
 				<div class="control-block">
 					<h3>{{ __('Modify') }}</h3>
@@ -757,6 +1050,7 @@
 					<input type="number" id="manual-lap-time" step="0.001" placeholder="{{ __('Manual Lap Time') }}" disabled />
 					<button id="add-lap" disabled>{{ __('Add Lap') }}</button>
 					<button id="clean-laps" disabled>{{ __('Clean Deleted Laps') }}</button>
+					<button id="delete-round" class="btn-danger" disabled>{{ __('Delete This Round') }}</button>
 				</div>
 				<div class="control-block">
 					<h3>{{ __('Reassign Heat') }}</h3>
@@ -777,6 +1071,15 @@
 
 <!-- Custom UI -->
 <div id="custom-ui"></div>
+
+<div id="delete-round-confirm" class="priority-message-interrupt mfp-hide popup">
+	<h2>{{ __('Delete This Round') }}</h2>
+	<div class="popup-content">
+		<p id="delete-round-text"></p>
+		<p><button class="btn-danger" id="delete-round-confirm-btn">{{ __('Delete') }}</button>
+		<button class="cancel">{{ __('Cancel') }}</button></p>
+	</div>
+</div>
 
 </main>
 {% endblock %}

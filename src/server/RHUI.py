@@ -23,6 +23,7 @@ from Database import ProgramMethod, RoundType
 from RHRace import RacingMode, RaceStatus
 from filtermanager import Flt
 import AdminAuth
+from ClusterNodeSet import mask_secondary_passwords
 import logging
 
 logger = logging.getLogger(__name__)
@@ -584,6 +585,8 @@ class RHUI():
                         config_vals[section] = {}
 
                     config_vals[section][item] = self._racecontext.serverconfig.get_item(section, item)
+                    if section == 'GENERAL' and item == 'SECONDARIES' and config_vals[section][item]:
+                        config_vals[section][item] = mask_secondary_passwords(config_vals[section][item])
 
         emit_payload = {
             'config': config_vals
@@ -683,10 +686,7 @@ class RHUI():
                 'pi_staging_at_s': self._racecontext.race.stage_time_monotonic,
                 'show_init_time_flag': self._racecontext.race.show_init_time_flag
             }
-        if race_class and race_class.round_type == RoundType.GROUPED and heat:
-            emit_payload['next_round'] = heat.group_id + 1
-        else:
-            emit_payload['next_round'] = self._racecontext.rhdata.get_round_num_for_heat(heat_id)
+        emit_payload['next_round'] = self._racecontext.rhdata.get_round_num_for_heat(heat_id, heat, race_class)
 
         if ('nobroadcast' in params):
             emit('race_status', emit_payload)
@@ -1034,16 +1034,21 @@ class RHUI():
         if self._racecontext.last_race:
             emit_payload['last_race'] = {}
 
-            if self._racecontext.last_race.current_heat is RHUtils.HEAT_ID_NONE:
+            last_heat_id = self._racecontext.last_race.current_heat
+            heat = None
+            if last_heat_id is RHUtils.HEAT_ID_NONE:
                 emit_payload['last_race']['displayname'] = self.__("Practice")
             else:
-                heat = self._racecontext.rhdata.get_heat(self._racecontext.last_race.current_heat)
+                heat = self._racecontext.rhdata.get_heat(last_heat_id)
                 if heat:
-                    emit_payload['last_race']['displayname'] = self._racecontext.rhdata.get_heat(self._racecontext.last_race.current_heat).display_name
+                    emit_payload['last_race']['displayname'] = heat.display_name
 
-            emit_payload['last_race']['heat'] = self._racecontext.last_race.current_heat
-            emit_payload['last_race']['round'] = self._racecontext.rhdata.get_max_round( \
-                                                        self._racecontext.last_race.current_heat)
+            emit_payload['last_race']['heat'] = last_heat_id
+            last_race_class = self._racecontext.rhdata.get_raceClass(heat.class_id) if heat and heat.class_id else None
+            if last_race_class and last_race_class.round_type == RoundType.GROUPED:
+                emit_payload['last_race']['round'] = heat.group_id + 1
+            else:
+                emit_payload['last_race']['round'] = self._racecontext.rhdata.get_max_round(last_heat_id)
             emit_payload['last_race']['status_msg'] = self._racecontext.last_race.status_message
 
             emit_payload['last_race']['leaderboard'] = self._racecontext.last_race.get_results()
@@ -1680,14 +1685,7 @@ class RHUI():
                    heat_data.coop_best_time >= 0.001 else ''
             emit_payload['coop_num_laps'] = heat_data.coop_num_laps
 
-            if heat_class:
-                race_class = self._racecontext.rhdata.get_raceClass(heat_class)
-                if race_class.round_type == RoundType.GROUPED:
-                    emit_payload['next_round'] = heat_data.group_id + 1
-                else:
-                    emit_payload['next_round'] = self._racecontext.rhdata.get_round_num_for_heat(heat_data.id)
-            else:
-                emit_payload['next_round'] = self._racecontext.rhdata.get_round_num_for_heat(heat_data.id)
+            emit_payload['next_round'] = self._racecontext.rhdata.get_round_num_for_heat(heat_data.id, heat_data)
         else:
             emit_payload['next_round'] = None
 
@@ -1784,12 +1782,17 @@ class RHUI():
         else:
             self._socket.emit('first_pass_registered', emit_payload)
 
-    def emit_phonetic_text(self, text_str, domain=False, winner_flag=False, **params):
-        '''Emits given phonetic text.'''
+    def emit_phonetic_text(self, text_str, domain=False, winner_flag=False, priority=False,
+                          resume_queue=False, **params):
+        '''Emits given phonetic text; 'priority' places it at the front of the client speak
+        queue, and 'resume_queue' ends a pause started by 'pause_speaking_queue'.
+        '''
         emit_payload = {
             'text': text_str,
             'domain': domain,
-            'winner_flag': winner_flag
+            'winner_flag': winner_flag,
+            'priority': priority,
+            'resume_queue': resume_queue
         }
 
         emit_payload = self._filters.run_filters(Flt.EMIT_PHONETIC_TEXT, emit_payload)
@@ -1798,6 +1801,25 @@ class RHUI():
             emit('phonetic_text', emit_payload)
         else:
             self._socket.emit('phonetic_text', emit_payload)
+
+    def emit_pause_speaking_queue(self, timeout_secs, **params):
+        '''Emits pause of client speak-queue processing, auto-resuming after the given timeout.'''
+        emit_payload = {'timeout': timeout_secs}
+        if ('nobroadcast' in params):
+            emit('pause_speaking_queue', emit_payload)
+        else:
+            self._socket.emit('pause_speaking_queue', emit_payload)
+
+    def emit_resume_speaking_queue(self, **params):
+        '''Emits resume of client speak-queue processing.'''
+        if ('nobroadcast' in params):
+            emit('resume_speaking_queue')
+        else:
+            self._socket.emit('resume_speaking_queue')
+
+    def emit_audio_owner(self, sid, owner_flag):
+        '''Emits to the given client whether it is the tab that plays audio on its machine.'''
+        self._socket.emit('audio_owner', {'owner': owner_flag}, to=sid)
 
     def emit_phonetic_split(self, split_data, **params):
         '''Emits phonetic split-pass data.'''

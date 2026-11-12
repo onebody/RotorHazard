@@ -3,7 +3,7 @@ import functools
 from Database import LapSource
 
 API_VERSION_MAJOR = 1
-API_VERSION_MINOR = 7
+API_VERSION_MINOR = 12
 
 import dataclasses
 import json
@@ -11,6 +11,7 @@ import inspect
 import copy
 import logging
 import RHUtils
+import frequencies
 from RHUI import UIField, UIFieldType
 from eventmanager import Evt
 from interface_mapper import InterfaceType
@@ -775,8 +776,56 @@ class DatabaseAPI():
         return self._racecontext.rhdata.get_results_savedRaceMeta(race_or_id)
 
     @callWithDatabaseWrapper
+    def race_results_rebuild(self, race_or_id):
+        race = self._racecontext.rhdata.resolve_savedRaceMeta_from_savedRaceMeta_or_id(race_or_id)
+        if not race:
+            return False
+        self._racecontext.rhdata.clear_results_for_race(race.heat_id, race.class_id, race.id)
+        self._emit_race_data_changed()
+        return True
+
+    @callWithDatabaseWrapper
+    def race_delete(self, race_or_id, keep_copy=True):
+        if not self._racecontext.rhdata.delete_savedRaceMeta(race_or_id, keep_copy):
+            return False
+        self._emit_race_data_changed()
+        return True
+
+    @callWithDatabaseWrapper
     def races_clear(self):
         return self._racecontext.rhdata.clear_race_data()
+
+    def _emit_race_data_changed(self):
+        self._racecontext.rhui.emit_heat_data()
+        self._racecontext.rhui.emit_race_list()
+        self._racecontext.rhui.emit_result_data()
+
+    # Deleted Races
+
+    @property
+    @callWithDatabaseWrapper
+    def deleted_races(self):
+        return self._racecontext.rhdata.get_deletedRaces()
+
+    @callWithDatabaseWrapper
+    def deleted_race_by_id(self, deleted_race_id):
+        return self._racecontext.rhdata.get_deletedRace(deleted_race_id)
+
+    @callWithDatabaseWrapper
+    def deleted_race_data(self, deleted_race_or_id):
+        return self._racecontext.rhdata.get_deletedRace_snapshot(deleted_race_or_id)
+
+    @callWithDatabaseWrapper
+    def deleted_race_conflicts(self, deleted_race_or_id):
+        return self._racecontext.rhdata.get_deletedRace_conflicts(deleted_race_or_id)
+
+    @callWithDatabaseWrapper
+    def race_restore(self, deleted_race_or_id):
+        race = self._racecontext.rhdata.restore_deletedRace(deleted_race_or_id)
+        if not race:
+            return False
+        self._emit_race_data_changed()
+        return race
 
     # Race -> Pilot Run
 
@@ -793,7 +842,7 @@ class DatabaseAPI():
     def pilotruns_by_race(self, race_id):
         return self._racecontext.rhdata.get_savedPilotRaces_by_savedRaceMeta(race_id)
 
-    def pilotrun_add(self, race_id, node_index, pilot_id, history_values, history_times, enter_at, exit_at, frequency, laps, marshal_type=None):
+    def pilotrun_add(self, race_id, node_index, pilot_id, history_values, history_times, enter_at, exit_at, frequency, laps, marshal_type=None, splits=None):
         data = {}
 
         for name, value in [
@@ -806,6 +855,7 @@ class DatabaseAPI():
             ('frequency', frequency),
             ('laps', laps),
             ('marshal_type', marshal_type),
+            ('splits', splits),
             ]:
             if value is not None:
                 data[name] = value
@@ -825,6 +875,13 @@ class DatabaseAPI():
             })
 
         return True
+
+    @callWithDatabaseWrapper
+    def pilotrun_suggest_calibration(self, pilotrace_id):
+        result = self._racecontext.calibration.suggest_for_pilotrun(pilotrace_id)[0]
+        if not result:
+            return None
+        return {'enter_at': result['enter_at'], 'exit_at': result['exit_at'], 'lap_count': result['lap_count']}
 
     # Race -> Pilot Run -> Laps
 
@@ -1136,6 +1193,14 @@ class RaceAPI():
         return self._racecontext.race.phonetic_status_msg
 
     @property
+    def race_time_sec(self):
+        return self._racecontext.race.race_time_sec
+
+    @property
+    def unlimited_time(self):
+        return self._racecontext.race.unlimited_time
+
+    @property
     def stage_time_internal(self):
         return self._racecontext.race.stage_time_monotonic
 
@@ -1190,9 +1255,24 @@ class RaceAPI():
                 payload.append([])
         return payload
 
-    def lap_add(self, seat_index, timestamp):
+    def lap_add(self, seat_index, timestamp, peak=None):
         seat = self._racecontext.interface.nodes[seat_index]
-        return self._racecontext.race.add_lap(seat, timestamp, LapSource.API)
+        return self._racecontext.race.add_lap(seat, timestamp, LapSource.API, peak=peak)
+
+    def laps_replace(self, seat_index, laps):
+        self._racecontext.race.replace_laps({
+            'seat': seat_index,
+            'laps': [{
+                'lap_time_stamp': lap['lap_time_stamp'],
+                'lap_time': lap['lap_time'],
+                'source': lap.get('source', LapSource.API),
+                'deleted': lap.get('deleted', False),
+            } for lap in laps],
+        })
+
+    @property
+    def last_race(self):
+        return self._racecontext.last_race
 
     @property
     @callWithDatabaseWrapper
@@ -1304,6 +1384,15 @@ class HardwareInterfaceAPI():
 
     def add(self, interface):
         return self._racecontext.interface.add_interface(interface, InterfaceType.RHAPI)
+
+    def seat_enter_at_set(self, seat_index, level):
+        return self._racecontext.calibration.set_enter_at_level(seat_index, level)
+
+    def seat_exit_at_set(self, seat_index, level):
+        return self._racecontext.calibration.set_exit_at_level(seat_index, level)
+
+    def seat_crossing_end(self, seat_index):
+        return self._racecontext.interface.force_end_crossing(seat_index)
 
 #
 # Server Config
@@ -1523,4 +1612,14 @@ class UtilsAPI():
     # Convert hexadecimal color values to packed int (LED)
     def color_hexstring_to_int(self, hex_color):
         return RHUtils.hexToColor(hex_color)
+
+    @property
+    def band_channel_frequencies(self):
+        return dict(frequencies.BAND_CHANNEL_FREQUENCIES)
+
+    def band_channel_for_frequency(self, frequency):
+        return frequencies.band_channel_for(frequency)
+
+    def frequency_for_band_channel(self, band, channel):
+        return frequencies.frequency_for(band, channel)
 

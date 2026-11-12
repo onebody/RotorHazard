@@ -311,7 +311,7 @@ def _do_calc_leaderboard(racecontext, **params):
                     race_format = rhDataObj.get_raceFormat(current_class.format_id)
 
                 if current_class.round_type == RoundType.GROUPED:
-                    round_num = 0
+                    round_num = 0  # heat display_name already carries "Round N" for grouped classes
                 else:
                     round_num = racecontext.rhdata.get_round_num_for_heat(current_heat.id)
             else:
@@ -761,20 +761,20 @@ def add_fastest_race_lap_meta(racecontext, all_leaderboards):
     leaderboard_by_fastest_lap = all_leaderboards['by_fastest_lap']
     fastest_race_lap_data = None
     if len(leaderboard_by_fastest_lap) > 0 and leaderboard_by_fastest_lap[0]['laps'] > 0:
-        if all_leaderboards['meta'].get('fastest_race_lap_data'):
-            if all_leaderboards['meta']['fastest_race_lap_data']['text'][1] == [leaderboard_by_fastest_lap[0]['callsign'],
-                                                                                leaderboard_by_fastest_lap[0]['fastest_lap']]:
-                return all_leaderboards # no change
-        else:
-            pilot = racecontext.rhdata.get_pilot(leaderboard_by_fastest_lap[0]['pilot_id'])
-            pilot_str = pilot.spoken_callsign if pilot else leaderboard_by_fastest_lap[0]['callsign']
-            phonetic_time = RHUtils.format_phonetic_time_to_str(
-                leaderboard_by_fastest_lap[0]['fastest_lap_raw'],
-                racecontext.serverconfig.get_item('UI', 'timeFormatPhonetic'))
-            fastest_race_lap_data = {}
-            fastest_race_lap_data['phonetic'] = [pilot_str, phonetic_time]
-            fastest_race_lap_data['text'] = [leaderboard_by_fastest_lap[0]['callsign'],
-                                             leaderboard_by_fastest_lap[0]['fastest_lap']]
+        existing = all_leaderboards['meta'].get('fastest_race_lap_data')
+        if existing and existing.get('text') == [leaderboard_by_fastest_lap[0]['callsign'],
+                                                 leaderboard_by_fastest_lap[0]['fastest_lap']]:
+            return all_leaderboards # no change
+        pilot = racecontext.rhdata.get_pilot(leaderboard_by_fastest_lap[0]['pilot_id'])
+        pilot_str = pilot.spoken_callsign if pilot else leaderboard_by_fastest_lap[0]['callsign']
+        phonetic_time = RHUtils.format_phonetic_time_to_str(
+            leaderboard_by_fastest_lap[0]['fastest_lap_raw'],
+            racecontext.serverconfig.get_item('UI', 'timeFormatPhonetic'))
+        fastest_race_lap_data = {}
+        fastest_race_lap_data['phonetic'] = [pilot_str, phonetic_time]
+        fastest_race_lap_data['text'] = [leaderboard_by_fastest_lap[0]['callsign'],
+                                         leaderboard_by_fastest_lap[0]['fastest_lap']]
+        fastest_race_lap_data['source'] = leaderboard_by_fastest_lap[0].get('fastest_lap_source')
 
     all_leaderboards['meta']['fastest_race_lap_data'] = fastest_race_lap_data
 
@@ -926,9 +926,9 @@ def build_incremental(racecontext, merge_input, source_input, transient=False):
     return racecontext.filters.run_filters(Flt.LEADERBOARD_BUILD_INCREMENTAL, output_result)
 
 
-def calc_team_leaderboard(racecontext):
+def calc_team_leaderboard(racecontext, race_obj=None):
     '''Calculates and returns team-racing info.'''
-    raceObj = racecontext.race
+    raceObj = race_obj if race_obj else racecontext.race
     rhDataObj = racecontext.rhdata
     time_format = racecontext.serverconfig.get_item('UI', 'timeFormat')
     # Uses current results cache / requires calc_leaderboard to have been run prior
@@ -1107,9 +1107,9 @@ def calc_team_leaderboard(racecontext):
         return leaderboard_output
     return None
 
-def calc_coop_leaderboard(racecontext):
+def calc_coop_leaderboard(racecontext, race_obj=None):
     '''Calculates and returns co-op-racing info.'''
-    raceObj = racecontext.race
+    raceObj = race_obj if race_obj else racecontext.race
     time_format = racecontext.serverconfig.get_item('UI', 'timeFormat')
     # Uses current results cache / requires calc_leaderboard to have been run prior
     race_format = raceObj.format
@@ -1391,8 +1391,8 @@ def get_gap_info(racecontext, seat_index):
 
     return racecontext.filters.run_filters(Flt.GAP_INFO, pass_info)
 
-def check_win_condition_result(racecontext, **kwargs):
-    raceObj = racecontext.race
+def check_win_condition_result(racecontext, race_obj=None, **kwargs):
+    raceObj = race_obj if race_obj else racecontext.race
     rhDataObj = racecontext.rhdata
     interfaceObj = racecontext.interface
     race_format = raceObj.format
@@ -1400,22 +1400,22 @@ def check_win_condition_result(racecontext, **kwargs):
         consecutivesCount = rhDataObj.get_optionInt('consecutivesCount', 3)
         if race_format.team_racing_mode == RacingMode.TEAM_ENABLED:
             if race_format.win_condition == WinCondition.MOST_PROGRESS:
-                return check_win_team_laps_and_time(racecontext, **kwargs)
+                return check_win_team_laps_and_time(racecontext, race_obj=raceObj, **kwargs)
             elif race_format.win_condition == WinCondition.MOST_LAPS:
-                return check_win_team_most_laps(racecontext, **kwargs)
+                return check_win_team_most_laps(racecontext, race_obj=raceObj, **kwargs)
             elif race_format.win_condition == WinCondition.FIRST_TO_LAP_X:
-                return check_win_team_first_to_x(racecontext, **kwargs)
+                return check_win_team_first_to_x(racecontext, race_obj=raceObj, **kwargs)
             elif race_format.win_condition == WinCondition.FASTEST_LAP:
-                return check_win_team_fastest_lap(racecontext, **kwargs)
+                return check_win_team_fastest_lap(racecontext, race_obj=raceObj, **kwargs)
             elif race_format.win_condition == WinCondition.FASTEST_CONSECUTIVE:
-                return check_win_team_fastest_consecutive(racecontext, consecutivesCount, **kwargs)
+                return check_win_team_fastest_consecutive(racecontext, consecutivesCount, race_obj=raceObj, **kwargs)
             elif race_format.win_condition == WinCondition.MOST_LAPS_OVERTIME:
-                return check_win_team_laps_and_overtime(racecontext, **kwargs)
+                return check_win_team_laps_and_overtime(racecontext, race_obj=raceObj, **kwargs)
         elif race_format.team_racing_mode == RacingMode.COOP_ENABLED:
             if race_format.win_condition == WinCondition.FIRST_TO_LAP_X:
-                return check_win_coop_first_to_x(racecontext, **kwargs)
+                return check_win_coop_first_to_x(racecontext, race_obj=raceObj, **kwargs)
             else:
-                return check_win_coop_most_laps(racecontext, **kwargs)
+                return check_win_coop_most_laps(racecontext, race_obj=raceObj, **kwargs)
         else:
             if race_format.win_condition == WinCondition.MOST_PROGRESS:
                 return check_win_laps_and_time(raceObj, interfaceObj, **kwargs)
@@ -1510,7 +1510,7 @@ def check_win_laps_and_time(raceObj, interfaceObj, **kwargs):
                         break
 
                 if pilots_can_pass == 0:
-                    return check_win_laps_and_time(raceObj, interfaceObj, forced=True, **kwargs)
+                    return check_win_laps_and_time(raceObj, interfaceObj, **dict(kwargs, forced=True))
 
     return {
         'status': WinStatus.NONE
@@ -1591,11 +1591,11 @@ def check_win_most_laps(raceObj, interfaceObj, **kwargs):
                 # call race if possible
                 if pilots_can_pass == 0:
                     if pilots_can_tie == 0 and pilots_tied == 0:
-                        return check_win_most_laps(raceObj, interfaceObj, forced=True, **kwargs)
+                        return check_win_most_laps(raceObj, interfaceObj, **dict(kwargs, forced=True))
                     elif pilots_tied > 0: # add "and pilots_can_tie == 0" to wait for 3+-way?
                         node_index = leaderboard[0]['node']
                         if raceObj.get_node_finished_flag(node_index) == True:
-                            return check_win_most_laps(raceObj, interfaceObj, forced=True, **kwargs)
+                            return check_win_most_laps(raceObj, interfaceObj, **dict(kwargs, forced=True))
 
     return {
         'status': WinStatus.NONE
@@ -1617,7 +1617,7 @@ def check_win_laps_and_overtime(raceObj, interfaceObj, **kwargs):
             if pilot_crossed_after_time:
                 return check_win_laps_and_time(raceObj, interfaceObj, **kwargs)
             else:
-                win_status = check_win_most_laps(raceObj, interfaceObj, forced=True, **kwargs)
+                win_status = check_win_most_laps(raceObj, interfaceObj, **dict(kwargs, forced=True))
                 if win_status['status'] == WinStatus.TIE and raceObj.race_status == RaceStatus.RACING:
                     # ties here change status to overtime
                     win_status['status'] = WinStatus.OVERTIME
@@ -1753,14 +1753,14 @@ def check_win_fastest_consecutive(raceObj, consecutivesCount, **kwargs):
         'status': WinStatus.NONE
     }
 
-def check_win_team_laps_and_time(racecontext, **kwargs):
-    raceObj = racecontext.race
+def check_win_team_laps_and_time(racecontext, race_obj=None, **kwargs):
+    raceObj = race_obj if race_obj else racecontext.race
     rhDataObj = racecontext.rhdata
     interfaceObj = racecontext.interface
 
     if raceObj.race_status == RaceStatus.DONE or \
                 raceObj.check_all_nodes_finished() or 'forced' in kwargs: # racing must be completed
-        team_info = calc_team_leaderboard(racecontext)
+        team_info = calc_team_leaderboard(racecontext, race_obj=raceObj)
         team_leaderboard = team_info['by_race_time']
         individual_leaderboard = raceObj.results['by_race_time']
         if len(team_leaderboard) > 1 and len(individual_leaderboard):
@@ -1795,7 +1795,7 @@ def check_win_team_laps_and_time(racecontext, **kwargs):
                 }
     elif raceObj.race_status == RaceStatus.RACING and raceObj.timer_running == False:
         # time has ended; check if winning is assured
-        team_info = calc_team_leaderboard(racecontext)
+        team_info = calc_team_leaderboard(racecontext, race_obj=raceObj)
         team_leaderboard = team_info['by_race_time']
         individual_leaderboard = raceObj.results['by_race_time']
         if len(team_leaderboard) > 1 and len(individual_leaderboard):
@@ -1831,7 +1831,7 @@ def check_win_team_laps_and_time(racecontext, **kwargs):
 
                 if 'overtime' in kwargs:
                     if team_members_finished[team_leaderboard[0]['name']]:
-                        return check_win_team_laps_and_time(racecontext, forced=True, **kwargs)
+                        return check_win_team_laps_and_time(racecontext, race_obj=raceObj, **dict(kwargs, forced=True))
 
                 for line in team_leaderboard[1:]:
                     max_potential_laps = line['laps'] + line['members'] - team_members_finished[line['name']]
@@ -1842,7 +1842,7 @@ def check_win_team_laps_and_time(racecontext, **kwargs):
                         max_consideration = max(max_consideration, time_to_complete)
 
                 if teams_can_pass == 0:
-                    return check_win_team_laps_and_time(racecontext, forced=True, **kwargs)
+                    return check_win_team_laps_and_time(racecontext, race_obj=raceObj, **dict(kwargs, forced=True))
                 elif leader_has_finished:
                     return {
                         'status': WinStatus.NONE,
@@ -1853,14 +1853,14 @@ def check_win_team_laps_and_time(racecontext, **kwargs):
         'status': WinStatus.NONE
     }
 
-def check_win_team_most_laps(racecontext, **kwargs):
-    raceObj = racecontext.race
+def check_win_team_most_laps(racecontext, race_obj=None, **kwargs):
+    raceObj = race_obj if race_obj else racecontext.race
     rhDataObj = racecontext.rhdata
     interfaceObj = racecontext.interface
 
     if raceObj.race_status == RaceStatus.DONE or \
                 raceObj.check_all_nodes_finished() or 'forced' in kwargs: # racing must be completed
-        team_info = calc_team_leaderboard(racecontext)
+        team_info = calc_team_leaderboard(racecontext, race_obj=raceObj)
         team_leaderboard = team_info['by_race_time']
         individual_leaderboard = raceObj.results['by_race_time']
         if len(team_leaderboard) > 1 and len(individual_leaderboard):
@@ -1893,7 +1893,7 @@ def check_win_team_most_laps(racecontext, **kwargs):
                 }
     elif raceObj.race_status == RaceStatus.RACING and raceObj.timer_running == False:
         # time has ended; check if winning is assured
-        team_info = calc_team_leaderboard(racecontext)
+        team_info = calc_team_leaderboard(racecontext, race_obj=raceObj)
         team_leaderboard = team_info['by_race_time']
         individual_leaderboard = raceObj.results['by_race_time']
         if len(team_leaderboard) > 1 and len(individual_leaderboard):
@@ -1936,18 +1936,18 @@ def check_win_team_most_laps(racecontext, **kwargs):
                 # call race if possible
                 if teams_can_pass == 0:
                     if teams_can_tie == 0 and teams_tied == 0:
-                        return check_win_team_laps_and_time(racecontext, forced=True)
+                        return check_win_team_laps_and_time(racecontext, race_obj=raceObj, forced=True)
                     elif teams_tied > 0: # add "and teams_can_tie == 0" to wait for 3+-way?
                         leading_team = team_leaderboard[0]
                         if team_members_finished[leading_team['name']] == leading_team['members']:
-                            return check_win_team_laps_and_time(racecontext, forced=True)
+                            return check_win_team_laps_and_time(racecontext, race_obj=raceObj, forced=True)
 
     return {
         'status': WinStatus.NONE
     }
 
-def check_win_team_laps_and_overtime(racecontext, **kwargs):
-    raceObj = racecontext.race
+def check_win_team_laps_and_overtime(racecontext, race_obj=None, **kwargs):
+    raceObj = race_obj if race_obj else racecontext.race
     if (raceObj.race_status == RaceStatus.RACING and raceObj.timer_running == False) or \
                     raceObj.race_status == RaceStatus.DONE or 'at_finish' in kwargs:
         race_format = raceObj.format
@@ -1961,9 +1961,9 @@ def check_win_team_laps_and_overtime(racecontext, **kwargs):
                     break
 
             if pilot_crossed_after_time:
-                return check_win_team_laps_and_time(racecontext, overtime=True, **kwargs)
+                return check_win_team_laps_and_time(racecontext, race_obj=raceObj, overtime=True, **kwargs)
             else:
-                win_status = check_win_team_most_laps(racecontext, forced=True, **kwargs)
+                win_status = check_win_team_most_laps(racecontext, race_obj=raceObj, **dict(kwargs, forced=True))
                 if win_status['status'] == WinStatus.TIE and raceObj.race_status == RaceStatus.RACING:
                     # ties here change status to overtime
                     win_status['status'] = WinStatus.OVERTIME
@@ -1974,14 +1974,14 @@ def check_win_team_laps_and_overtime(racecontext, **kwargs):
         'status': WinStatus.NONE
     }
 
-def check_win_team_first_to_x(racecontext, **_kwargs):
-    raceObj = racecontext.race
+def check_win_team_first_to_x(racecontext, race_obj=None, **_kwargs):
+    raceObj = race_obj if race_obj else racecontext.race
     rhDataObj = racecontext.rhdata
     interfaceObj = racecontext.interface
 
     race_format = raceObj.format
     if race_format.number_laps_win: # must have laps > 0 to win
-        team_leaderboard = calc_team_leaderboard(racecontext)['by_race_time']
+        team_leaderboard = calc_team_leaderboard(racecontext, race_obj=raceObj)['by_race_time']
         individual_leaderboard = raceObj.results['by_race_time']
         if len(team_leaderboard) > 1 and len(individual_leaderboard):
             lead_lap = team_leaderboard[0]['laps']
@@ -2014,14 +2014,14 @@ def check_win_team_first_to_x(racecontext, **_kwargs):
         'status': WinStatus.NONE
     }
 
-def check_win_team_fastest_lap(racecontext, **kwargs):
-    raceObj = racecontext.race
+def check_win_team_fastest_lap(racecontext, race_obj=None, **kwargs):
+    raceObj = race_obj if race_obj else racecontext.race
     rhDataObj = racecontext.rhdata
     interfaceObj = racecontext.interface
 
     if raceObj.race_status == RaceStatus.DONE or \
                 raceObj.check_all_nodes_finished() or 'forced' in kwargs: # racing must be completed
-        team_leaderboard = calc_team_leaderboard(racecontext)['by_avg_fastest_lap']
+        team_leaderboard = calc_team_leaderboard(racecontext, race_obj=raceObj)['by_avg_fastest_lap']
         if len(team_leaderboard) > 1:
             if team_leaderboard[0]['laps'] > 0: # must have at least one lap
                 # check for tie
@@ -2041,7 +2041,7 @@ def check_win_team_fastest_lap(racecontext, **kwargs):
 
     elif 'at_finish' in kwargs:
         race_format = raceObj.format
-        team_leaderboard = calc_team_leaderboard(racecontext)['by_avg_fastest_lap']
+        team_leaderboard = calc_team_leaderboard(racecontext, race_obj=raceObj)['by_avg_fastest_lap']
         if len(team_leaderboard) > 1:
             if team_leaderboard[0]['laps'] > 0: # must have at least one lap
 
@@ -2078,13 +2078,13 @@ def check_win_team_fastest_lap(racecontext, **kwargs):
         'status': WinStatus.NONE
     }
 
-def check_win_team_fastest_consecutive(racecontext, consecutivesCount, **kwargs):
-    raceObj = racecontext.race
+def check_win_team_fastest_consecutive(racecontext, consecutivesCount, race_obj=None, **kwargs):
+    raceObj = race_obj if race_obj else racecontext.race
     rhDataObj = racecontext.rhdata
 
     if raceObj.race_status == RaceStatus.DONE or \
                 raceObj.check_all_nodes_finished() or 'forced' in kwargs: # racing must be completed
-        team_leaderboard = calc_team_leaderboard(racecontext)['by_avg_consecutives']
+        team_leaderboard = calc_team_leaderboard(racecontext, race_obj=raceObj)['by_avg_consecutives']
         if len(team_leaderboard) > 1:
             race_format = raceObj.format
             if team_leaderboard[0]['laps'] > consecutivesCount or \
@@ -2104,7 +2104,7 @@ def check_win_team_fastest_consecutive(racecontext, consecutivesCount, **kwargs)
                     'data': team_leaderboard[0]
                 }
     elif 'at_finish' in kwargs:
-        team_leaderboard = calc_team_leaderboard(racecontext)['by_avg_consecutives']
+        team_leaderboard = calc_team_leaderboard(racecontext, race_obj=raceObj)['by_avg_consecutives']
         if len(team_leaderboard) > 1:
             fast_consecutives = team_leaderboard[0]['average_consecutives_raw']
             if fast_consecutives and fast_consecutives > 0: # must have recorded time (otherwise impossible to set bounds)
@@ -2139,10 +2139,10 @@ def check_win_team_fastest_consecutive(racecontext, consecutivesCount, **kwargs)
         'status': WinStatus.NONE
     }
 
-def check_win_coop_first_to_x(racecontext, **kwargs):
-    raceObj = racecontext.race
+def check_win_coop_first_to_x(racecontext, race_obj=None, **kwargs):
+    raceObj = race_obj if race_obj else racecontext.race
     if raceObj.format.number_laps_win:  # must have laps > 0 to win
-        leaderboard_output = calc_coop_leaderboard(racecontext)
+        leaderboard_output = calc_coop_leaderboard(racecontext, race_obj=raceObj)
         coop_leaderboard = leaderboard_output.get('by_race_time') if leaderboard_output else None
         if coop_leaderboard and len(coop_leaderboard) > 0:
             coop_laps = coop_leaderboard[0].get('laps')
@@ -2156,11 +2156,11 @@ def check_win_coop_first_to_x(racecontext, **kwargs):
         'status': WinStatus.NONE
     }
 
-def check_win_coop_most_laps(racecontext, **kwargs):
-    raceObj = racecontext.race
+def check_win_coop_most_laps(racecontext, race_obj=None, **kwargs):
+    raceObj = race_obj if race_obj else racecontext.race
     if (raceObj.race_status == RaceStatus.RACING and raceObj.timer_running == False) or \
                         raceObj.race_status == RaceStatus.DONE or 'at_finish' in kwargs:
-        leaderboard_output = calc_coop_leaderboard(racecontext)
+        leaderboard_output = calc_coop_leaderboard(racecontext, race_obj=raceObj)
         coop_leaderboard = leaderboard_output.get('by_race_time') if leaderboard_output else None
         if coop_leaderboard and len(coop_leaderboard) > 0:
             coop_laps = coop_leaderboard[0].get('laps')

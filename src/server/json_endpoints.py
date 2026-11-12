@@ -10,7 +10,9 @@ class AlchemyEncoder(json.JSONEncoder):
         if isinstance(obj.__class__, DeclarativeMeta):
             # an SQLAlchemy class
             fields = {}
-            for field in [x for x in dir(obj) if not x.startswith('_') and x != 'metadata']:
+            # deprecated attribute aliases in Database.py warn on every read; skip them
+            skip = ('metadata', 'race_mode', 'staging_tones', 'note', 'cacheStatus', 'rankStatus', 'heatAdvanceType')
+            for field in [x for x in dir(obj) if not x.startswith('_') and x not in skip]:
                 data = obj.__getattribute__(field)
                 if field != "query" \
                     and field != "query_class":
