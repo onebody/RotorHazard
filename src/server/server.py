@@ -216,6 +216,7 @@ from data_export import DataExportManager
 from data_import import DataImportManager
 from VRxControl import VRxControlManager
 from HeatGenerator import HeatGeneratorManager
+import ethernet_nodes  # RH-ENE：以太网计时节点子系统（D-7=N-1，核心化、非插件）
 
 # Create shared context
 RaceContext = RaceContext.RaceContext(CONFIG_FILE_NAME, CFG_BKP_DIR_NAME)
@@ -1103,6 +1104,8 @@ def on_load_data(data):
             RaceContext.rhui.emit_cluster_status()
         elif load_type == 'hardware_log_init':
             log.emit_current_log_file_to_socket(Current_log_path_name, SOCKET_IO)
+        elif load_type == 'ethnodes_status':
+            emit('ethnodes_status', _ethnodes_status())
         else:
             logger.warning('Called undefined load type: {}'.format(load_type))
 
@@ -3624,6 +3627,11 @@ def _do_init_rh_interface():
             #     subclass='in-use'
             #     )
 
+        # RH-ENE：以太网节点追加在 mock 之后，座位由注册表预排（C-2），故已绑定
+        # 飞行员的 mock/RH 节点下标不漂移。子系统关闭时工厂返回 None，不挂载。
+        ethernet_interface = ethernet_nodes.build_interface(RaceContext.serverconfig)
+        if ethernet_interface is not None:
+            RaceContext.interface.add_interface(ethernet_interface, InterfaceType.ETHNODE)
 
         RaceContext.race.num_nodes = len(RaceContext.interface.nodes)  # save number of nodes found
         return True
@@ -3649,6 +3657,99 @@ def initialize_rh_interface():
     RaceContext.interface.add_callbacks()
     RaceContext.interface.reindex_nodes()
     return True
+
+def reload_ethernet_nodes():
+    '''C-3：只在 READY 态重建以太网节点装配（确认/移除节点后刷新座位与白名单）。
+
+    仿 restore_database_file 的生命周期：停后台线程 → 重建接口（initialize_rh_interface
+    先 clear_interfaces 再按注册表重挂 ETHNODE）→ 重置比赛/接口状态 → 重启后台线程。
+    赛中重载被拒：座位或时钟偏移一旦变动，会把正在计时的主成绩拖下水（§6.3/T-2）。
+    '''
+    if RaceContext.race.race_status != RaceStatus.READY:
+        return False
+    stop_background_threads()
+    gevent.sleep(0.1)
+    try:
+        if not initialize_rh_interface():
+            return False
+        init_race_state()
+        init_interface_state()
+    except Exception:
+        logger.exception("Unexpected error in 'reload_ethernet_nodes()'")
+        return False
+    finally:
+        start_background_threads(True)
+    return True
+
+#
+# RH-ENE：以太网节点管理入口（N-4 状态读取 + D-2 确认/移除 + C-3 READY 态重载）
+#
+
+def _ethnode_interface():
+    for meta in RaceContext.interface.mapped_interfaces:
+        if meta.type == InterfaceType.ETHNODE:
+            return meta.interface
+    return None
+
+def _ethnodes_status():
+    status = ethernet_nodes.node_status(_ethnode_interface(),
+                                        ethernet_nodes.NodeRegistry(RaceContext.serverconfig))
+    # RH-ENE 增量2：纯新增 local_nodes 键，显示串口原生（有线/无线桥接）计时设备；
+    # 不改动 ENP-W 的 candidates/nodes/stats 任何字段。
+    status['local_nodes'] = ethernet_nodes.local_node_status(
+        RaceContext.interface, RaceContext.serverconfig)
+    return status
+
+def _ethnodes_refuse_if_racing():
+    '''C-3：赛中不得改座位/白名单。返回 True 表示已拒绝，调用方应跳过写入。'''
+    if RaceContext.race.race_status != RaceStatus.READY:
+        RaceContext.rhui.emit_priority_message(
+            __('Ethernet node changes prevented by active race: stop and save/discard laps'),
+            False, nobroadcast=True)
+        return True
+    return False
+
+@APP.route('/ethnodes')
+@requires_auth
+def render_ethnodes():
+    '''以太网节点管理页（N-1：核心路由，不走插件 blueprint_add）。'''
+    return render_template('ethnodes.html',
+                           enabled=ethernet_nodes.NodeRegistry(RaceContext.serverconfig).enabled)
+
+@SOCKET_IO.on('load_ethnodes')
+@requires_socketio_auth
+@catchLogExcWithDBWrapper
+def on_load_ethnodes(data):
+    emit('ethnodes_status', _ethnodes_status())
+
+@SOCKET_IO.on('ethnodes_confirm')
+@requires_socketio_auth
+@catchLogExcWithDBWrapper
+def on_ethnodes_confirm(data):
+    '''D-2：发现 ≠ 接入——确认动作把 uid 写进白名单并预排座位，随后 READY 态重载。'''
+    if not _ethnodes_refuse_if_racing():
+        ethernet_nodes.NodeRegistry(RaceContext.serverconfig).confirm(
+            data.get('uid'), data.get('channels'))
+        reload_ethernet_nodes()
+    emit('ethnodes_status', _ethnodes_status())
+
+@SOCKET_IO.on('ethnodes_remove')
+@requires_socketio_auth
+@catchLogExcWithDBWrapper
+def on_ethnodes_remove(data):
+    '''C-4：移除只摘白名单、座位留占位，随后 READY 态重载。'''
+    if not _ethnodes_refuse_if_racing():
+        ethernet_nodes.NodeRegistry(RaceContext.serverconfig).remove(data.get('uid'))
+        reload_ethernet_nodes()
+    emit('ethnodes_status', _ethnodes_status())
+
+@SOCKET_IO.on('ethnodes_reload')
+@requires_socketio_auth
+@catchLogExcWithDBWrapper
+def on_ethnodes_reload(data):
+    if not _ethnodes_refuse_if_racing():
+        reload_ethernet_nodes()
+    emit('ethnodes_status', _ethnodes_status())
 
 # Create and save server/node information
 def buildServerInfo():
