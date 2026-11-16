@@ -35,6 +35,7 @@ venv
 
 # User plugins folder
 /src/server/plugins/*
+!/src/server/plugins/rh_usb_flash/
 
 # macOS
 .DS_Store

@@ -1,0 +1,177 @@
+{% extends "layout.html" %} {% block title %}{{ __('USB devices') }}{% endblock %} {% block content %}
+<main class="page-settings">
+<h2>{{ __('USB devices') }}</h2>
+<p>{{ __('Select USB devices to flash firmware or provision a relay in one step. Flashing always asks for confirmation first.') }}</p>
+
+<div class="control-set">
+	<b>{{ __('USB devices') }}:</b>
+	<select id="usb-select"><option value="">{{ __('Select a USB device') }}</option></select>
+	&nbsp; <button id="usb-refresh">{{ __('Re-enumerate') }}</button>
+	<span id="usb-flash-note" class="priority-message"></span>
+</div>
+
+<div class="control-set" id="usb-detail" style="display:none">
+	<div id="usb-detail-text"></div>
+	<div style="margin-top:0.4em">
+		<label>{{ __('Target firmware') }}:
+			<select id="usb-target-env">
+				{% for env in usb_environments %}<option value="{{ env }}">{{ env }}</option>
+				{% endfor %}
+			</select>
+		</label>
+		&nbsp; <button id="usb-do-flash">{{ __('Flash firmware') }}</button>
+		<button id="usb-do-provision">{{ __('Provision network') }}</button>
+		<button id="usb-do-test">{{ __('Test device') }}</button>
+	</div>
+</div>
+
+<div class="control-set">
+	<b>{{ __('Operation log') }}:</b>
+	<div id="usb-log" style="max-height:20em;overflow-y:auto;font-family:monospace;font-size:0.9em"></div>
+</div>
+
+<p><a href="/ethnodes">{{ __('Ethernet Nodes') }}</a></p>
+
+<script type="text/javascript" charset="utf-8">
+	$(document).ready(function () {
+		// 插件页面：所有来自网络播报的字段（port/version/error）一律 .text() 注入，杜绝 XSS。
+		// 一次只发一个串口任务（服务端互斥），任务进行中按钮统一禁用。
+		var usbBusy = false;
+		var usbSelected = null;
+
+		function usb_kind_label(k) {
+			return {
+				relay: __('S3 relay'),
+				s3: __('S3 (not provisioned)'),
+				eth: __('C5 wired'),
+				c5: __('C5 (scanning)'),
+				unknown: __('Unrecognized')
+			}[k] || k;
+		}
+
+		function usb_log(text) {
+			$('#usb-log').prepend($('<div>').text(
+				new Date().toLocaleTimeString() + '  ' + text));
+		}
+
+		function usb_set_busy(flag) {
+			usbBusy = flag;
+			$('#usb-refresh, #usb-do-flash, #usb-do-provision, #usb-do-test')
+				.prop('disabled', flag);
+		}
+
+		function render_usb_devices(payload) {
+			var $sel = $('#usb-select').empty();
+			$sel.append($('<option>').attr('value', '').text(__('Select a USB device')));
+			var devices = payload.devices || [];
+			devices.forEach(function (d) {
+				var summary = d.version || d.info_raw || d.error || '';
+				$sel.append($('<option>').attr('value', d.port).text(
+					d.port + ' · ' + usb_kind_label(d.kind) +
+					(summary ? ' · ' + summary : '')));
+			});
+			if (!devices.length) {
+				$sel.append($('<option>').attr('value', '').text(__('No USB devices on this host')));
+			}
+			if (usbSelected && devices.some(function (d) { return d.port === usbSelected; })) {
+				$sel.val(usbSelected);
+			}
+			// 刷写能力降级：PIO 或固件工程缺失时禁用并显示原因。
+			var flash = payload.flash || {};
+			var note = '';
+			if (!flash.pio) { note = __('PIO not found (USB_FLASH/PIO_PATH)'); }
+			else if (!flash.project) { note = __('Firmware project not configured (USB_FLASH/PROJECT_DIR)'); }
+			$('#usb-flash-note').text(
+				note ? __('Flashing disabled on this host') + ': ' + note : '');
+			$('#usb-do-flash').prop('disabled', !!note || usbBusy);
+		}
+
+		function render_usb_detail(d) {
+			var $box = $('#usb-detail');
+			if (!d.port || d.port !== usbSelected) { return; }
+			$box.show();
+			var lines = [usb_kind_label(d.kind) + ' · ' + (d.mac || '—') +
+				' · ' + (d.version || '—') + ' · ' +
+				__('Uptime') + ' ' + (d.uptime_ms === null ? '—' : d.uptime_ms + 'ms')];
+			if (d.kind === 'relay' && d.net_status) {
+				lines.push(__('Uplink') + ': ' + (d.net_status.url || '—') +
+					' · ' + (d.net_status.ip4 || '—'));
+			}
+			if (d.kind === 'eth') {
+				lines.push(__('Build-time IP') + ': ' + (d.cached_ip || '—'));
+			}
+			if (d.error) { lines.push(d.error); }
+			$('#usb-detail-text').text(lines.join('\n'));
+			if (d.flash_default) { $('#usb-target-env').val(d.flash_default); }
+			// 仅中继可一键配网（识别判据见 usb_devices.classify_device）。
+			$('#usb-do-provision').prop('disabled', d.kind !== 'relay' || usbBusy);
+		}
+
+		socket.on('usb_devices', render_usb_devices);
+		socket.on('usb_device_detail', render_usb_detail);
+		socket.on('usb_flash_result', function (r) {
+			usb_set_busy(false);
+			usb_log(__('Flash firmware') + ' [' + (r.env || '?') + ' → ' + (r.port || '?') + ']: ' +
+				(r.ok ? (r.fresh ? 'OK' : __('Uptime') + ' not fresh') : (r.error || 'fail')));
+		});
+		socket.on('usb_provision_result', function (r) {
+			usb_set_busy(false);
+			usb_log(__('Provision network') + ' [' + (r.port || '?') + ']: ' +
+				(r.ok ? (r.online ? __('Relay online') : __('Relay not seen online yet'))
+					: (r.error || 'fail')));
+		});
+		socket.on('usb_test_result', function (r) {
+			usb_set_busy(false);
+			var d = r.device || {};
+			usb_log(__('Test device') + ' [' + (r.port || '?') + ']: ' +
+				(r.ok ? usb_kind_label(d.kind) + ' · ' + (d.version || '') : (r.error || d.error || 'fail')));
+		});
+
+		$('#usb-refresh').click(function () {
+			socket.emit('usb_list', {});
+		});
+		$('#usb-select').change(function () {
+			usbSelected = $(this).val();
+			if (usbSelected) {
+				usb_set_busy(false);
+				socket.emit('usb_probe_dev', { port: usbSelected });
+			} else {
+				$('#usb-detail').hide();
+			}
+		});
+		$('#usb-do-flash').click(function () {
+			if (!usbSelected || usbBusy) { return; }
+			var env = $('#usb-target-env').val();
+			if (!window.confirm(__('Confirm flash') + ': ' + env + ' → ' + usbSelected + '?')) { return; }
+			usb_set_busy(true);
+			socket.emit('usb_flash', { port: usbSelected, env: env });
+		});
+		$('#usb-do-provision').click(function () {
+			if (!usbSelected || usbBusy) { return; }
+			usb_set_busy(true);
+			socket.emit('usb_provision', {
+				port: usbSelected,
+				host: window.location.hostname,
+				port_num: 8011
+			});
+		});
+		$('#usb-do-test').click(function () {
+			if (!usbSelected || usbBusy) { return; }
+			usb_set_busy(true);
+			socket.emit('usb_test', { port: usbSelected });
+		});
+
+		// 自足：连接建立即拉语言与设备列表；language 到达后再拉一次，避免首帧
+		// 抢在语言之前到达时动态文案回退成英文。
+		function request_language() { socket.emit('load_data', { load_types: ['language', 'all_languages'] }); }
+		socket.on('language', function (msg) {
+			if (msg && typeof msg.language !== 'undefined') { rotorhazard.interface_language = msg.language; }
+			socket.emit('usb_list', {});
+		});
+		socket.on('all_languages', function () { socket.emit('usb_list', {}); });
+		socket.on('connect', function () { request_language(); socket.emit('usb_list', {}); });
+		if (socket.connected) { request_language(); socket.emit('usb_list', {}); }
+	});
+</script>
+</main>
+{% endblock %}
