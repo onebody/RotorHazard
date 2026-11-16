@@ -445,5 +445,16 @@ class RelayEvents(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class RelayPage(unittest.TestCase):
+    def test_page_renders_relay_section_and_port_options(self):
+        response = server.APP.test_client().get('/usbflash')
+        self.assertEqual(200, response.status_code)
+        body = response.data.decode()
+        for marker in ('relay-table', 'relay-rows', 'relay-others',
+                       'relay-refresh', 'relay-port-select'):
+            self.assertIn(marker, body)
+        self.assertIn('relay_refresh', body)
+
+
 if __name__ == '__main__':
     unittest.main()

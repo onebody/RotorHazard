@@ -25,6 +25,29 @@
 	</div>
 </div>
 
+<div class="control-set" id="relay-table">
+	<h4>{{ __('Relays (wireless)') }}</h4>
+	<div id="relay-note" class="priority-message"></div>
+	<table style="width:100%">
+		<thead>
+			<tr>
+				<th>{{ __('Device') }}</th><th>{{ __('Points to') }}</th>
+				<th>{{ __('Gateway') }}</th><th>{{ __('RH port') }}</th>
+				<th>{{ __('State') }}</th><th></th>
+			</tr>
+		</thead>
+		<tbody id="relay-rows"></tbody>
+	</table>
+	<div id="relay-others" style="font-size:0.9em;opacity:0.8"></div>
+	<div class="control-set">
+		<button id="relay-refresh">{{ __('Refresh relays') }}</button>
+		<select id="relay-port-select">
+			<option value="">{{ __('Select an RH serial port') }}</option>
+			{% for p in relay_ports %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+		</select>
+	</div>
+</div>
+
 <div class="control-set">
 	<b>{{ __('Operation log') }}:</b>
 	<div id="usb-log" style="max-height:20em;overflow-y:auto;font-family:monospace;font-size:0.9em"></div>
@@ -161,6 +184,83 @@
 			socket.emit('usb_test', { port: usbSelected });
 		});
 
+		function relay_state_text(row) {
+			var map = {
+				ok: '{{ __("Bound") }}',
+				offsite: '{{ __("Wrong gateway") }}',
+				unbound: '{{ __("Not bound to an RH port") }}',
+				missing: '{{ __("Bound, but the RH port is absent") }}'
+			};
+			return map[row.binding] || row.binding;
+		}
+
+		function relay_row_html(row) {
+			var cells = [];
+			cells.push($('<td>').text((row.description || row.port) + ' ' + (row.mac || '')));
+			cells.push($('<td>').text((row.net_status && row.net_status.url) || '—'));
+			cells.push($('<td>').text(row.gateway.known
+				? ((row.gateway.id || '?') + (row.gateway.online ? ' online' : ' offline'))
+				: '{{ __("unknown") }}'));
+			cells.push($('<td>').text(row.bound_port || '—'));
+			cells.push($('<td>').text(relay_state_text(row)));
+			var actions = $('<td>');
+			if (row.binding === 'unbound') {
+				actions.append($('<button>').text('{{ __("Bind") }}').click(function () {
+					var port = $('#relay-port-select').val();
+					if (!port) { usb_log('{{ __("Pick an RH serial port first") }}'); return; }
+					socket.emit('relay_tag', { usb_port: row.port, node_port: port,
+						label: row.description || row.port });
+				}));
+			}
+			if (row.binding === 'offsite' || row.binding === 'missing') {
+				actions.append($('<button>').text('{{ __("Retarget") }}').click(function () {
+					socket.emit('relay_retarget', { usb_port: row.port });
+				}));
+			}
+			if (row.binding === 'ok' || row.binding === 'missing') {
+				actions.append($('<button>').text('{{ __("Unbind") }}').click(function () {
+					socket.emit('relay_unbind', { node_port: row.bound_port });
+				}));
+			}
+			if (row.command) {
+				actions.append($('<div>').css('font-size', '0.85em')
+					.text('{{ __("Run this to bring the port up") }}: ' + row.command));
+			}
+			cells.push(actions);
+			return $('<tr>').append(cells);
+		}
+
+		function render_relay_table(payload) {
+			// busy 时先别清表：清空再 return 会让表格闪成空白（Spec §3.5 要的是「其余按钮 disabled」）。
+			if (payload.busy) {
+				$('#relay-table').find('button').prop('disabled', true);
+				usb_log('{{ __("A USB job is running") }}');
+				return;
+			}
+			var body = $('#relay-rows').empty();
+			(payload.rows || []).forEach(function (row) { body.append(relay_row_html(row)); });
+			var others = $('#relay-others').empty();
+			(payload.others || []).forEach(function (row) {
+				others.append($('<div>').text(
+					(row.port || '?') + ' — ' + (row.kind || '?') + ' — ' +
+					(row.info_raw || row.error || '')));
+			});
+			var gw = payload.gateway || {};
+			$('#relay-note').text(gw.host ? ('{{ __("Gateway") }}: ' + gw.host + ':' + gw.port)
+				: '{{ __("Gateway not configured (USB_FLASH/GATEWAY_HOST, GATEWAY_PORT)") }}');
+		}
+
+		socket.on('relay_table', render_relay_table);
+		socket.on('relay_result', function (r) {
+			usb_log('relay ' + r.action + ': ' + (r.ok ? 'OK' : (r.error || 'failed')));
+			socket.emit('relay_refresh', {});
+		});
+		socket.on('relay_retarget_result', function (r) {
+			usb_log('relay retarget: ' + (r.ok ? 'OK' : (r.error || 'failed')));
+			socket.emit('relay_refresh', {});
+		});
+		$('#relay-refresh').click(function () { socket.emit('relay_refresh', {}); });
+
 		// 自足：连接建立即拉语言与设备列表；language 到达后再拉一次，避免首帧
 		// 抢在语言之前到达时动态文案回退成英文。
 		function request_language() { socket.emit('load_data', { load_types: ['language', 'all_languages'] }); }
@@ -169,8 +269,8 @@
 			socket.emit('usb_list', {});
 		});
 		socket.on('all_languages', function () { socket.emit('usb_list', {}); });
-		socket.on('connect', function () { request_language(); socket.emit('usb_list', {}); });
-		if (socket.connected) { request_language(); socket.emit('usb_list', {}); }
+		socket.on('connect', function () { request_language(); socket.emit('usb_list', {}); socket.emit('relay_refresh', {}); });
+		if (socket.connected) { request_language(); socket.emit('usb_list', {}); socket.emit('relay_refresh', {}); }
 	});
 </script>
 </main>
