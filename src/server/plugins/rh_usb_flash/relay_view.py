@@ -71,3 +71,67 @@ def binding_state(mac, net_status, gw_host, gw_port, tag_by_mac, local_ports):
     if port not in (local_ports or []):
         return MISSING
     return OK
+
+
+def merge_tag(tags, port, label, mac):
+    '''读回合并：只改自己那一个 key，别人的标注原样保留（绝不整表替换）。'''
+    merged = {key: dict(value or {}) for key, value in (tags or {}).items()}
+    entry = merged.get(port) or {}
+    entry['label'] = label
+    entry['transport'] = WIRELESS
+    entry['relay_mac'] = mac
+    merged[port] = entry
+    return merged
+
+
+def drop_tag(tags, port):
+    '''同上：只删自己的 key。'''
+    merged = {key: dict(value or {}) for key, value in (tags or {}).items()}
+    merged.pop(port, None)
+    return merged
+
+
+def bridge_command(node):
+    '''missing 态的补齐命令原文（插件绝不代跑进程）。'''
+    url = (node or {}).get('bridge')
+    if not url:
+        return None
+    return "python tools/real_laps_c/node_bridge.py --url '{}'".format(url)
+
+
+def relay_rows(devices, gateway_payload, tags, local_ports, gw_host, gw_port):
+    '''枚举结果 → {'rows': 中继表, 'others': 未进判定的设备}。
+
+    只有 kind=relay 且有 net_status 的设备进表；裸 S3 / 未识别设备单列，
+    摊出 info_raw（那是排查线，不是状态）。
+    '''
+    gw = gateway_index(gateway_payload)
+    by_mac = tag_index(tags)
+    rows, others = [], []
+    for dev in devices or []:
+        if dev.get('kind') != 'relay' or not dev.get('net_status'):
+            others.append({'port': dev.get('port'), 'kind': dev.get('kind'),
+                           'info_raw': dev.get('info_raw'),
+                           'error': dev.get('error')})
+            continue
+        net = dev['net_status']
+        node = gw.get(hostport(net.get('url')))
+        state = binding_state(dev.get('mac'), net, gw_host, gw_port, by_mac,
+                              local_ports)
+        bound = by_mac.get(dev.get('mac'))
+        rows.append({
+            'port': dev.get('port'),
+            'description': dev.get('description') or '',
+            'mac': dev.get('mac'),
+            'version': dev.get('version'),
+            'net_status': net,
+            'gateway': {'known': node is not None,
+                        'online': bool((node or {}).get('online')),
+                        'discovered': bool((node or {}).get('discovered')),
+                        'id': (node or {}).get('id')},
+            'bound_port': bound,
+            'tag': (tags or {}).get(bound) if bound else None,
+            'binding': state,
+            'command': bridge_command(node) if state == MISSING else None,
+        })
+    return {'rows': rows, 'others': others}
