@@ -456,5 +456,49 @@ class RelayPage(unittest.TestCase):
         self.assertIn('relay_refresh', body)
 
 
+class InjectionGuards(unittest.TestCase):
+    def setUp(self):
+        self.client = server.SOCKET_IO.test_client(server.APP)
+        server.rh_program_initialize(reg_endpoints_flag=False)
+
+    def tearDown(self):
+        server.stop_background_threads()
+        self.client.disconnect()
+
+    def test_registered_markdown_carries_no_script_or_event_handlers(self):
+        """§3.1：panel markdown 走 showdown 直通 HTML + jQuery append 求值 <script>。
+        一旦有人往 markdown 里塞脚本，每来一次 ui 广播就会再绑一份监听。"""
+        import re
+        found = []
+        for name, panel, text in rh_usb_flash.REGISTERED_MARKDOWN:
+            self.assertNotRegex(text, r'(?i)<\s*script', name)
+            self.assertNotRegex(text, r'(?i)javascript:', name)
+            self.assertNotRegex(text, r'(?i)on[a-z]+\s*=', name)
+            found.append((name, panel))
+        self.assertTrue(found, '插件没有注册任何 markdown')
+
+    def test_relay_events_require_auth(self):
+        import AdminAuth
+        from plugins.rh_usb_flash import gateway_client        # noqa: F401
+        AdminAuth.set_admin_socket_auth_enabled(True)
+        self.addCleanup(AdminAuth.set_admin_socket_auth_enabled, False)
+        cfg = server.RaceContext.serverconfig
+        cfg.set_item('SECRETS', 'ADMIN_USERNAME', 'admin')
+        cfg.set_item('SECRETS', 'ADMIN_PASSWORD', 'pw')
+        self.addCleanup(cfg.set_item, 'SECRETS', 'ADMIN_USERNAME', '')
+        self.addCleanup(cfg.set_item, 'SECRETS', 'ADMIN_PASSWORD', '')
+        orig_status = cfg.config_file_status
+        cfg.config_file_status = 1
+        self.addCleanup(setattr, cfg, 'config_file_status', orig_status)
+        for event, payload in (('relay_refresh', {}),
+                               ('relay_tag', TAG_REQ),
+                               ('relay_unbind', {'node_port': '/dev/ttys009'}),
+                               ('relay_retarget', RETARGET_REQ)):
+            self.client.emit(event, payload)
+        names = [ev['name'] for ev in self.client.get_received()]
+        for name in ('relay_table', 'relay_result', 'relay_retarget_result'):
+            self.assertNotIn(name, names)
+
+
 if __name__ == '__main__':
     unittest.main()

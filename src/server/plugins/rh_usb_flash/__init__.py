@@ -28,6 +28,9 @@ DEFAULT_CACHE_DIR = os.path.join(DATA_DIR, 'usb_flash_cache')
 
 USB_LOCK = threading.Lock()
 BLUEPRINT = Blueprint('rh_usb_flash', __name__, template_folder='templates')
+# register_markdown 的实参留档：注入面闸要对着「真正传进去的字符串」断言，
+# 而不是对着模板或文档（Spec §7）。
+REGISTERED_MARKDOWN = []
 # add_url_rule 对同名端点二次注册会抛错，而 load_plugin 会把异常吞成"插件未
 # 加载"。重复 initialize（reload/重装路径）据此跳过，不二次注册。
 _registered = False
@@ -338,9 +341,10 @@ def initialize(rhapi):
 
     rhapi.config.register_section(SECTION)
     rhapi.ui.register_panel(PANEL, rhapi.__('USB devices'), 'settings', 0, False)
-    rhapi.ui.register_markdown(PANEL, 'usb_flash_link',
-                                rhapi.__('USB devices') + ': '
-                                '[/usbflash](/usbflash)')
+    link_md = rhapi.__('USB devices') + ': [/usbflash](/usbflash)'
+    # 元组顺序与 InjectionGuards 的解包一致：(name, panel, text)
+    REGISTERED_MARKDOWN.append(('usb_flash_link', PANEL, link_md))
+    rhapi.ui.register_markdown(PANEL, 'usb_flash_link', link_md)
     for field in [
         UIField('PIO_PATH', rhapi.__('PlatformIO executable'),
                 UIFieldType.TEXT, value=firmware_flash.PPIO,
