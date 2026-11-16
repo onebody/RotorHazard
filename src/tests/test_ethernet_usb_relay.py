@@ -200,5 +200,86 @@ class RowTests(unittest.TestCase):
                                           'error': None}])
 
 
+class GatewayClientTests(unittest.TestCase):
+    def test_good_payload_returns_the_node_list(self):
+        from plugins.rh_usb_flash import gateway_client
+
+        class Resp:
+            status = 200
+            def read(self):
+                return b'{"nodes":[{"id":"a","kind":"relay","online":true}],"servers":[]}'
+
+        def opener(url, timeout=None):
+            self.assertEqual(url, 'http://192.168.31.102:8011/api/nodes')
+            return Resp()
+
+        out = gateway_client.fetch_nodes('http://192.168.31.102:8011', opener=opener)
+        self.assertTrue(out['ok'])
+        self.assertEqual(out['nodes'][0]['id'], 'a')
+
+    def test_timeout_becomes_unknown_not_an_exception(self):
+        from plugins.rh_usb_flash import gateway_client
+
+        def opener(url, timeout=None):
+            raise TimeoutError('timed out')
+
+        out = gateway_client.fetch_nodes('http://gw:8011', opener=opener)
+        self.assertFalse(out['ok'])
+        self.assertEqual(out['nodes'], [])
+        self.assertIn('timed out', out['error'])
+
+    def test_non_200_is_unknown(self):
+        from plugins.rh_usb_flash import gateway_client
+
+        class Resp:
+            status = 502
+            def read(self):
+                return b''
+
+        out = gateway_client.fetch_nodes('http://gw:8011', opener=lambda u, timeout=None: Resp())
+        self.assertFalse(out['ok'])
+        self.assertIn('502', out['error'])
+
+    def test_bad_json_is_unknown(self):
+        from plugins.rh_usb_flash import gateway_client
+
+        class Resp:
+            status = 200
+            def read(self):
+                return b'not json'
+
+        out = gateway_client.fetch_nodes('http://gw:8011', opener=lambda u, timeout=None: Resp())
+        self.assertFalse(out['ok'])
+
+    def test_unexpected_shape_is_unknown(self):
+        from plugins.rh_usb_flash import gateway_client
+
+        class Resp:
+            status = 200
+            def read(self):
+                return b'{"servers":[]}'
+
+        out = gateway_client.fetch_nodes('http://gw:8011', opener=lambda u, timeout=None: Resp())
+        self.assertFalse(out['ok'])
+        self.assertEqual(out['nodes'], [])
+
+    def test_no_gateway_configured_makes_no_request(self):
+        from plugins.rh_usb_flash import gateway_client
+
+        def opener(url, timeout=None):
+            raise AssertionError('不该发请求')
+
+        out = gateway_client.fetch_nodes(None, opener=opener)
+        self.assertFalse(out['ok'])
+        self.assertIn('not configured', out['error'])
+
+    def test_gateway_base_refuses_half_a_config(self):
+        from plugins.rh_usb_flash import gateway_client
+        self.assertIsNone(gateway_client.gateway_base('', 8011))
+        self.assertIsNone(gateway_client.gateway_base('10.0.0.5', None))
+        self.assertEqual(gateway_client.gateway_base('10.0.0.5', 8011),
+                         'http://10.0.0.5:8011')
+
+
 if __name__ == '__main__':
     unittest.main()
