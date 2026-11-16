@@ -6,6 +6,7 @@ socket 事件全部在 initialize() 里向 RHAPI 注册，server.py / Config.py 
 长任务，在 gevent 后台跑完再广播结果，不阻塞事件循环；赛中拒绝写入类动作。
 '''
 
+import ipaddress
 import logging
 import os
 import subprocess
@@ -15,7 +16,8 @@ import gevent
 from flask import Response, render_template, request
 from flask.blueprints import Blueprint
 
-from . import firmware_flash, gateway_client, netplan, provision, relay_view, usb_ops
+from . import (firmware_check, firmware_flash, gateway_client, netplan,
+               provision, relay_view, usb_ops)
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +30,6 @@ DEFAULT_CACHE_DIR = os.path.join(DATA_DIR, 'usb_flash_cache')
 
 USB_LOCK = threading.Lock()
 BLUEPRINT = Blueprint('rh_usb_flash', __name__, template_folder='templates')
-# register_markdown 的实参留档：注入面闸要对着「真正传进去的字符串」断言，
-# 而不是对着模板或文档（Spec §7）。
-REGISTERED_MARKDOWN = []
 # add_url_rule 对同名端点二次注册会抛错，而 load_plugin 会把异常吞成"插件未
 # 加载"。重复 initialize（reload/重装路径）据此跳过，不二次注册。
 _registered = False
@@ -52,7 +51,6 @@ def initialize(rhapi):
     # RH 核心要在服务器就绪（gevent 已 monkey-patch）后才能导入；纯模块测试
     # 只 import 本包的子模块，不该被这些依赖拖起来。
     from AdminAuth import check_auth
-    from RHUI import UIField, UIFieldType
     from RHRace import RaceStatus
     from interface_mapper import InterfaceType
 
@@ -93,6 +91,11 @@ def initialize(rhapi):
         host = (rhapi.config.get(SECTION, 'GATEWAY_HOST') or '').strip()
         raw = str(rhapi.config.get(SECTION, 'GATEWAY_PORT') or '').strip()
         return host, (int(raw) if raw.isdigit() and int(raw) > 0 else None)
+
+    def settings_payload():
+        '''页面「高级设置」表单与保存回执共用的一份当前配置。'''
+        host, port = gateway_cfg()
+        return dict(settings(), gateway={'host': host, 'port': port})
 
     def local_ports():
         '''与核心 local_nodes 同源：mapper 的 RH 串口接口里出现过的物理口。'''
@@ -143,11 +146,8 @@ def initialize(rhapi):
         current = settings()
         rhapi.ui.socket_send('usb_devices', {
             'devices': devices,
-            'flash': {
-                'pio': usb_ops.pio_available(current['pio_path']),
-                'project': bool(current['project']) and os.path.isfile(
-                    os.path.join(current['project'], 'platformio.ini')),
-            }})
+            'flash': flash_state(current),
+            'settings': settings_payload()})
 
     def on_probe(data):
         port = (data or {}).get('port')
@@ -160,8 +160,19 @@ def initialize(rhapi):
             device = usb_ops.probe_one(port)
         finally:
             USB_LOCK.release()
-        device['cached_ip'] = usb_ops.cached_ip_for(settings()['cache_dir'])
+        current = settings()
+        device['cached_ip'] = usb_ops.cached_ip_for(current['cache_dir'])
+        # 「固件是否最新 / 适合」随详情一起回：选设备即完成检查，无需另发事件。
+        device['check'] = firmware_check.check(
+            device, current['project'],
+            pio=usb_ops.pio_available(current['pio_path']))
+        device['flash'] = flash_state(current)
         rhapi.ui.socket_send('usb_device_detail', device)
+
+    def flash_state(current):
+        return {'pio': usb_ops.pio_available(current['pio_path']),
+                'project': bool(current['project']) and os.path.isfile(
+                    os.path.join(current['project'], 'platformio.ini'))}
 
     def flash_job(port, env):
         if env not in firmware_flash.FLASH_ENVS:
@@ -204,6 +215,55 @@ def initialize(rhapi):
         spawn('usb_flash_result', lambda: flash_job(port, env),
               {'port': port, 'env': env})
 
+    def provision_job(port, host, port_num, wired_ip):
+        '''按设备类别分派：中继走无线 NET 配网；C5 走有线（构建注入 IP 再烧）。'''
+        device = usb_ops.probe_one(port)
+        kind = device.get('kind')
+        if kind == 'relay':
+            if not host or not port_num:
+                return {'ok': False, 'mode': 'wireless',
+                        'error': 'gateway not configured '
+                                 '(USB_FLASH/GATEWAY_HOST, GATEWAY_PORT)'}
+            return dict(provision.provision_relay(
+                port, host, port_num, gateway_nodes=gateway_watcher()),
+                mode='wireless')
+        if kind in ('eth', 'c5'):
+            current = settings()
+            state = flash_state(current)
+            if not state['pio']:
+                return {'ok': False, 'mode': 'wired',
+                        'error': 'PIO not available at ' + current['pio_path']}
+            if not state['project']:
+                return {'ok': False, 'mode': 'wired',
+                        'error': 'firmware project not configured '
+                                 '(USB_FLASH/PROJECT_DIR)'}
+            ip = (wired_ip or '').strip()
+            if ip:
+                try:
+                    addr = ipaddress.IPv4Address(ip)
+                except ValueError:
+                    return {'ok': False, 'mode': 'wired',
+                            'error': 'invalid IP: ' + ip}
+                if not addr.is_private:
+                    return {'ok': False, 'mode': 'wired',
+                            'error': 'IP must be private: ' + ip}
+            else:
+                try:
+                    ip = netplan.pick_free_ip(
+                        netplan.interface_env(), netplan.arp_entries(),
+                        netplan.alive_probe())
+                except netplan.NoCandidateSubnet as exc:
+                    return {'ok': False, 'mode': 'wired',
+                            'error': 'ip pick failed: {}'.format(exc)}
+            # 有线固件无运行期 ETHIP 命令：配网 IP 只在构建期生效，故必烧一次。
+            result = usb_ops.flash_and_verify(
+                port, 'esp32c5-eth', current['project'], current['cache_dir'],
+                subprocess.run, injected_ip=ip, boot_s=3.0)
+            result.update({'mode': 'wired', 'injected_ip': ip})
+            return result
+        return {'ok': False, 'mode': None,
+                'error': 'not provisionable (kind={})'.format(kind)}
+
     def on_provision(data):
         data = data or {}
         port = data.get('port')
@@ -217,12 +277,37 @@ def initialize(rhapi):
                                                           'error': 'busy',
                                                           'port': port})
             return
-        host = data.get('host')
-        port_num = int(data.get('port_num') or 8011)
+        cfg_host, cfg_port = gateway_cfg()
+        host = (data.get('host') or cfg_host or '').strip()
+        raw = str(data.get('port_num') or '').strip()
+        port_num = int(raw) if raw.isdigit() else cfg_port
+        wired_ip = data.get('wired_ip')
         spawn('usb_provision_result',
-              lambda: provision.provision_relay(
-                  port, host, port_num, gateway_nodes=gateway_watcher()),
+              lambda: provision_job(port, host, port_num, wired_ip),
               {'port': port, 'host': host})
+
+    def on_save_settings(data):
+        '''合并页接管原设置面板的配置项（面板已删）：保存到 USB_FLASH 段。'''
+        data = data or {}
+        values = {
+            'PIO_PATH': str(data.get('pio_path') or '').strip(),
+            'PROJECT_DIR': str(data.get('project') or '').strip(),
+            'CACHE_DIR': str(data.get('cache_dir') or '').strip(),
+            'GATEWAY_HOST': str(data.get('gateway_host') or '').strip(),
+            'GATEWAY_PORT': str(data.get('gateway_port') or '').strip(),
+        }
+        port_text = values['GATEWAY_PORT']
+        if port_text and not port_text.isdigit():
+            rhapi.ui.socket_send('usb_settings_result', {
+                'ok': False, 'error': 'gateway port must be numeric',
+                'settings': settings_payload()})
+            return
+        ok = True
+        for key, value in values.items():
+            ok = bool(rhapi.config.set(SECTION, key, value)) and ok
+        rhapi.ui.socket_send('usb_settings_result', {
+            'ok': ok, 'settings': settings_payload(),
+            'error': None if ok else 'config write failed'})
 
     def on_test(data):
         port = (data or {}).get('port')
@@ -334,47 +419,23 @@ def initialize(rhapi):
             '__': ctx.language.__,
             'Debug': ctx.serverconfig.get_item('GENERAL', 'DEBUG'),
             'restart_flag': ctx.serverstate.restart_required,
-            'usb_environments': sorted(firmware_flash.FLASH_ENVS),
+            'usb_environments': [
+                {'name': env, 'target': firmware_check.env_target(env),
+                 'desc': desc}
+                for env, desc in sorted(firmware_flash.FLASH_ENVS.items())],
+            'usb_settings': settings_payload(),
             'relay_ports': local_ports(),
-            'gateway': dict(zip(('host', 'port'), gateway_cfg())),
         })
 
     rhapi.config.register_section(SECTION)
-    # 合并页：USB 设备与以太网节点现为同一页面（/usbflash），设置页只留这一个面板。
-    panel_title = rhapi.__('USB devices / Ethernet Nodes')
-    rhapi.ui.register_panel(PANEL, panel_title, 'settings', 0, False)
-    link_md = panel_title + ': [/usbflash](/usbflash)'
-    # 元组顺序与 InjectionGuards 的解包一致：(name, panel, text)
-    REGISTERED_MARKDOWN.append(('usb_flash_link', PANEL, link_md))
-    rhapi.ui.register_markdown(PANEL, 'usb_flash_link', link_md)
-    for field in [
-        UIField('PIO_PATH', rhapi.__('PlatformIO executable'),
-                UIFieldType.TEXT, value=firmware_flash.PPIO,
-                persistent_section=SECTION,
-                desc=rhapi.__('Used to build and flash the firmware project.')),
-        UIField('PROJECT_DIR', rhapi.__('Firmware project directory'),
-                UIFieldType.TEXT, value='', persistent_section=SECTION,
-                desc=rhapi.__('Directory holding platformio.ini (QiYun-RMC58).')),
-        UIField('CACHE_DIR', rhapi.__('Firmware build cache'),
-                UIFieldType.TEXT, value=DEFAULT_CACHE_DIR,
-                persistent_section=SECTION,
-                desc=rhapi.__('Cached .bin per injected IP; empty to disable.')
-                ),
-        UIField('GATEWAY_HOST', rhapi.__('Gateway host'),
-                UIFieldType.TEXT, value='', persistent_section=SECTION,
-                desc=rhapi.__('LAN address of the gateway (serve.mjs) this '
-                              'relay should dial.')),
-        UIField('GATEWAY_PORT', rhapi.__('Gateway port'),
-                UIFieldType.TEXT, value='', persistent_section=SECTION,
-                desc=rhapi.__('Port of the gateway, e.g. 8011.')),
-    ]:
-        rhapi.fields.register_option(field, PANEL)
-
+    # 设置页不再有本插件面板（用户裁定：唯一入口是 /usbflash 合并页）：
+    # 原面板里的 5 个配置项搬到合并页「高级设置」，经 usb_save_settings 写回。
     for name, handler in [('usb_list', on_list),
                           ('usb_probe_dev', on_probe),
                           ('usb_flash', on_flash),
                           ('usb_provision', on_provision),
                           ('usb_test', on_test),
+                          ('usb_save_settings', on_save_settings),
                           ('relay_refresh', on_relay_refresh),
                           ('relay_tag', on_relay_tag),
                           ('relay_unbind', on_relay_unbind),

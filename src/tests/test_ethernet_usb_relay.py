@@ -474,17 +474,12 @@ class InjectionGuards(unittest.TestCase):
         server.stop_background_threads()
         self.client.disconnect()
 
-    def test_registered_markdown_carries_no_script_or_event_handlers(self):
-        """§3.1：panel markdown 走 showdown 直通 HTML + jQuery append 求值 <script>。
-        一旦有人往 markdown 里塞脚本，每来一次 ui 广播就会再绑一份监听。"""
-        import re
-        found = []
-        for name, panel, text in rh_usb_flash.REGISTERED_MARKDOWN:
-            self.assertNotRegex(text, r'(?i)<\s*script', name)
-            self.assertNotRegex(text, r'(?i)javascript:', name)
-            self.assertNotRegex(text, r'(?i)on[a-z]+\s*=', name)
-            found.append((name, panel))
-        self.assertTrue(found, '插件没有注册任何 markdown')
+    def test_settings_page_carries_no_plugin_panel(self):
+        """用户裁定：设置页不再挂本插件面板，唯一入口是 /usbflash 合并页。
+        panel markdown 那套注入面随之整体消失（页面脚本一律 .text() 注入）。"""
+        self.assertFalse(hasattr(rh_usb_flash, 'REGISTERED_MARKDOWN'))
+        names = [panel.name for panel in server.RHAPI.ui.panels]
+        self.assertNotIn(rh_usb_flash.PANEL, names)
 
     def test_relay_events_require_auth(self):
         import AdminAuth

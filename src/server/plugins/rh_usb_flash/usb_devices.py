@@ -67,7 +67,8 @@ def classify_device(info, net, eth):
     if info is None:
         return {'kind': 'unknown', 'flash_default': None, 'provisionable': False,
                 'net_status': None, 'mac': None, 'uptime_ms': None,
-                'version': None, 'info_raw': (net or eth or '').strip() or None}
+                'version': None, 'target': None,
+                'info_raw': (net or eth or '').strip() or None}
     info_raw = 'INFO ' + '|'.join(str(info[k]) for k in
                                   ('app', 'target', 'proto', 'version',
                                    'commit', 'phy', 'mac', 'uptime_ms'))
@@ -86,4 +87,5 @@ def classify_device(info, net, eth):
             'provisionable': provisionable, 'net_status': status
             if info['target'] == 'esp32s3' and kind == 'relay' else None,
             'mac': info['mac'], 'uptime_ms': info['uptime_ms'],
-            'version': info['version'], 'info_raw': info_raw}
+            'version': info['version'], 'target': info['target'],
+            'info_raw': info_raw}
