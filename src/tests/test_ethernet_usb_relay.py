@@ -18,6 +18,26 @@ sys.path.append(_TESTS_DIR)
 
 from plugins.rh_usb_flash import relay_view
 
+import tempfile as _tempfile
+
+os.environ['RH_NODES'] = '8'
+os.environ['RH_DATA_DIR'] = _tempfile.mkdtemp(prefix='rh_usb_relay_')
+
+import server
+from RHRace import RaceStatus
+from plugins import rh_usb_flash
+from plugins.rh_usb_flash import usb_ops
+
+server.RaceContext.serverconfig.config['SECRETS']['ADMIN_USERNAME'] = ''
+server.RaceContext.serverconfig.config['SECRETS']['ADMIN_PASSWORD'] = ''
+server.RaceContext.serverconfig.config['GENERAL']['DEBUG'] = True
+
+
+def setUpModule():
+    plugin = server.plugin_class('rh_usb_flash', server.PROGRAM_DIR, False)
+    assert server.load_plugin(plugin), 'plugin load failed: {}'.format(plugin.load_issue)
+
+
 GW = ('192.168.31.102', 8011)
 
 NET_URL_GOOD = 'ws://192.168.31.102:8011/node'
@@ -279,6 +299,150 @@ class GatewayClientTests(unittest.TestCase):
         self.assertIsNone(gateway_client.gateway_base('10.0.0.5', None))
         self.assertEqual(gateway_client.gateway_base('10.0.0.5', 8011),
                          'http://10.0.0.5:8011')
+
+
+TAG_REQ = {'usb_port': DEV['port'], 'node_port': '/dev/ttys009', 'label': 'relay-1'}
+RETARGET_REQ = {'usb_port': DEV['port'], 'host': '192.168.31.102', 'port_num': 8011}
+
+
+class RelayEvents(unittest.TestCase):
+    def setUp(self):
+        self.client = server.SOCKET_IO.test_client(server.APP)
+        server.rh_program_initialize(reg_endpoints_flag=False)
+        self.set_gateway('192.168.31.102', '8011')
+
+    def tearDown(self):
+        server.stop_background_threads()
+        self.client.disconnect()
+
+    def set_gateway(self, host, port):
+        cfg = server.RaceContext.serverconfig
+        cfg.set_item('USB_FLASH', 'GATEWAY_HOST', host)
+        cfg.set_item('USB_FLASH', 'GATEWAY_PORT', port)
+
+    def patch_enum(self, devices):
+        orig = usb_ops.enumerate_devices
+        usb_ops.enumerate_devices = lambda: list(devices)
+        self.addCleanup(setattr, usb_ops, 'enumerate_devices', orig)
+
+    def patch_probe(self, device=None):
+        orig = usb_ops.probe_one
+        usb_ops.probe_one = lambda port, **kw: dict(device or DEV)
+        self.addCleanup(setattr, usb_ops, 'probe_one', orig)
+
+    def patch_gateway(self, payload):
+        from plugins.rh_usb_flash import gateway_client
+        orig = gateway_client.fetch_nodes
+        gateway_client.fetch_nodes = lambda base, **kw: dict(payload)
+        self.addCleanup(setattr, gateway_client, 'fetch_nodes', orig)
+
+    def patch_provision(self):
+        '''记录 provision_relay 的调用；拒绝路径必须让它零调用（G7 的「零下发」）。'''
+        from plugins.rh_usb_flash import provision
+        calls = []
+        orig = provision.provision_relay
+
+        def fake(usb_port, host, port_num, **kw):
+            calls.append((usb_port, host, port_num))
+            return {'ok': True}
+
+        provision.provision_relay = fake
+        self.addCleanup(setattr, provision, 'provision_relay', orig)
+        return calls
+
+    def last_event(self, name):
+        for ev in reversed(self.client.get_received()):
+            if ev['name'] == name:
+                return ev['args'][0]
+        return None
+
+    def set_race(self, status):
+        orig = server.RaceContext.race.race_status
+        server.RaceContext.race.race_status = status
+        self.addCleanup(setattr, server.RaceContext.race, 'race_status', orig)
+
+    def test_refresh_emits_a_row_per_relay(self):
+        self.patch_enum([DEV])
+        self.patch_gateway(NODES)
+        self.client.emit('relay_refresh', {})
+        payload = self.last_event('relay_table')
+        self.assertIsNotNone(payload)
+        self.assertEqual(len(payload['rows']), 1)
+        self.assertEqual(payload['rows'][0]['binding'], 'unbound')
+
+    def test_refresh_while_a_usb_job_runs_reports_busy(self):
+        with rh_usb_flash.USB_LOCK:
+            self.client.emit('relay_refresh', {})
+            payload = self.last_event('relay_table')
+        self.assertTrue(payload['busy'])
+
+    def test_tag_merges_instead_of_replacing_the_whole_table(self):
+        cfg = server.RaceContext.serverconfig
+        cfg.set_item('LOCAL_NODES', 'PORT_TAGS',
+                     {'/dev/ttyUSB0': {'label': 'wired A', 'transport': 'wired'}})
+        self.patch_probe(DEV)
+        self.client.emit('relay_tag', TAG_REQ)
+        result = self.last_event('relay_result')
+        self.assertTrue(result['ok'])
+        tags = cfg.get_item('LOCAL_NODES', 'PORT_TAGS')
+        self.assertEqual(tags['/dev/ttyUSB0'], {'label': 'wired A', 'transport': 'wired'})
+        self.assertEqual(tags['/dev/ttys009']['relay_mac'], DEV['mac'])
+        self.assertEqual(tags['/dev/ttys009']['transport'], 'wireless')
+
+    def test_tag_succeeds_during_an_active_race(self):
+        """只改显示的东西不该被 READY 门拦住（G7 的反向判据）。"""
+        self.set_race(RaceStatus.RACING)
+        self.patch_probe(DEV)
+        self.client.emit('relay_tag', TAG_REQ)
+        result = self.last_event('relay_result')
+        self.assertTrue(result['ok'])
+        self.assertNotIn('refused', result)
+
+    def test_tag_refuses_a_port_that_is_not_a_relay(self):
+        self.patch_probe({'port': DEV['port'], 'kind': 'c5', 'mac': None})
+        self.client.emit('relay_tag', TAG_REQ)
+        result = self.last_event('relay_result')
+        self.assertFalse(result['ok'])
+        self.assertIn('relay', result['error'])
+
+    def test_unbind_removes_only_its_own_tag(self):
+        cfg = server.RaceContext.serverconfig
+        cfg.set_item('LOCAL_NODES', 'PORT_TAGS',
+                     {'/dev/ttys009': {'label': 'x', 'transport': 'wireless',
+                                       'relay_mac': DEV['mac']},
+                      '/dev/ttyUSB0': {'label': 'wired A', 'transport': 'wired'}})
+        self.client.emit('relay_unbind', {'node_port': '/dev/ttys009'})
+        self.assertTrue(self.last_event('relay_result')['ok'])
+        tags = cfg.get_item('LOCAL_NODES', 'PORT_TAGS')
+        self.assertNotIn('/dev/ttys009', tags)
+        self.assertIn('/dev/ttyUSB0', tags)
+
+    def test_retarget_is_refused_during_a_race(self):
+        calls = self.patch_provision()
+        self.set_race(RaceStatus.RACING)
+        self.client.emit('relay_retarget', RETARGET_REQ)
+        payload = self.last_event('relay_retarget_result')
+        self.assertFalse(payload['ok'])
+        self.assertTrue(payload['refused'])
+        self.assertEqual(calls, [], '比赛中不许往设备写任何字节')
+
+    def test_retarget_refuses_without_a_configured_gateway(self):
+        calls = self.patch_provision()
+        self.set_gateway('', '')
+        self.client.emit('relay_retarget', {'usb_port': DEV['port']})
+        payload = self.last_event('relay_retarget_result')
+        self.assertFalse(payload['ok'])
+        self.assertIn('gateway', payload['error'])
+        self.assertEqual(calls, [])
+
+    def test_retarget_is_busy_while_a_usb_job_runs(self):
+        calls = self.patch_provision()
+        with rh_usb_flash.USB_LOCK:
+            self.client.emit('relay_retarget', RETARGET_REQ)
+            payload = self.last_event('relay_retarget_result')
+        self.assertFalse(payload['ok'])
+        self.assertEqual('busy', payload['error'])
+        self.assertEqual(calls, [])
 
 
 if __name__ == '__main__':

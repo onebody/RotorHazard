@@ -15,7 +15,7 @@ import gevent
 from flask import Response, render_template, request
 from flask.blueprints import Blueprint
 
-from . import firmware_flash, netplan, provision, usb_ops
+from . import firmware_flash, gateway_client, netplan, provision, relay_view, usb_ops
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,38 @@ def initialize(rhapi):
             rhapi.ui.socket_broadcast(
                 event, dict(prefix or {}, **payload))
         gevent.spawn(run_job)
+
+    def gateway_cfg():
+        '''网关地址只从配置读；半配就算没配（配置优先于代码兜底，不猜端口）。'''
+        host = (rhapi.config.get(SECTION, 'GATEWAY_HOST') or '').strip()
+        raw = str(rhapi.config.get(SECTION, 'GATEWAY_PORT') or '').strip()
+        return host, (int(raw) if raw.isdigit() and int(raw) > 0 else None)
+
+    def local_ports():
+        '''与核心 local_nodes 同源：mapper 的 RH 串口接口里出现过的物理口。'''
+        mapper = getattr(ctx, 'interface', None)
+        rh = mapper.get_rh_interface() if mapper is not None else None
+        ports = []
+        for node in (getattr(rh, 'nodes', None) or []):
+            port = getattr(getattr(node, 'serial', None), 'port', None)
+            if port and port not in ports:
+                ports.append(port)
+        return ports
+
+    def tags_now():
+        return rhapi.config.get(relay_view.SECTION, relay_view.TAG_KEY) or {}
+
+    def write_tags(tags):
+        return bool(rhapi.config.set(relay_view.SECTION, relay_view.TAG_KEY, tags))
+
+    def relay_snapshot(devices=None):
+        host, port = gateway_cfg()
+        nodes = gateway_client.fetch_nodes(
+            gateway_client.gateway_base(host, port))
+        if devices is None:
+            devices = usb_ops.enumerate_devices()
+        return relay_view.relay_rows(devices, nodes, tags_now(), local_ports(),
+                                     host, port)
 
     def gateway_watcher():
         '''配网后的 online 判据：本机 ETHNODE 接口出现任何在线会话。'''
@@ -203,6 +235,90 @@ def initialize(rhapi):
                     and not device.get('error'), 'device': device}
         spawn('usb_test_result', job, {'port': port})
 
+    def on_relay_refresh(data):
+        if not USB_LOCK.acquire(blocking=False):
+            rhapi.ui.socket_send('relay_table',
+                                 {'busy': True, 'rows': [], 'others': []})
+            return
+        try:
+            table = relay_snapshot()
+        except Exception as exc:
+            logger.exception('relay refresh failed')
+            table = {'rows': [], 'others': [], 'error': str(exc)}
+        finally:
+            USB_LOCK.release()
+        host, port = gateway_cfg()
+        rhapi.ui.socket_send('relay_table', dict(
+            table, gateway={'host': host, 'port': port}))
+
+    def on_relay_tag(data):
+        '''只改显示：不过 READY 门（赛中想改备注不该改不动）。'''
+        data = data or {}
+        usb_port, node_port = data.get('usb_port'), data.get('node_port')
+        if not usb_port or not node_port:
+            rhapi.ui.socket_send('relay_result', {
+                'ok': False, 'action': 'tag',
+                'error': 'usb_port and node_port are required'})
+            return
+        if not USB_LOCK.acquire(blocking=False):
+            rhapi.ui.socket_send('relay_result', {'ok': False, 'action': 'tag',
+                                                  'error': 'busy'})
+            return
+        try:
+            device = usb_ops.probe_one(usb_port)
+        finally:
+            USB_LOCK.release()
+        if device.get('kind') != 'relay' or not device.get('mac'):
+            rhapi.ui.socket_send('relay_result', {
+                'ok': False, 'action': 'tag',
+                'error': 'not a relay (kind={})'.format(device.get('kind'))})
+            return
+        label = data.get('label') or usb_port
+        tags = relay_view.merge_tag(tags_now(), node_port, label, device['mac'])
+        ok = write_tags(tags)
+        rhapi.ui.socket_send('relay_result', {
+            'ok': ok, 'action': 'tag', 'node_port': node_port,
+            'relay_mac': device['mac'],
+            'error': None if ok else 'config write failed'})
+
+    def on_relay_unbind(data):
+        node_port = (data or {}).get('node_port')
+        if not node_port:
+            rhapi.ui.socket_send('relay_result', {
+                'ok': False, 'action': 'unbind', 'error': 'node_port is required'})
+            return
+        ok = write_tags(relay_view.drop_tag(tags_now(), node_port))
+        rhapi.ui.socket_send('relay_result', {
+            'ok': ok, 'action': 'unbind', 'node_port': node_port,
+            'error': None if ok else 'config write failed'})
+
+    def on_relay_retarget(data):
+        data = data or {}
+        usb_port = data.get('usb_port')
+        cfg_host, cfg_port = gateway_cfg()
+        host = (data.get('host') or cfg_host or '').strip()
+        raw = data.get('port_num')
+        port_num = int(raw) if raw else (cfg_port or 0)
+        if not host or not port_num:
+            rhapi.ui.socket_send('relay_retarget_result', {
+                'ok': False, 'usb_port': usb_port,
+                'error': 'gateway not configured (USB_FLASH/GATEWAY_HOST, '
+                         'GATEWAY_PORT)'})
+            return
+        if refuse_if_racing():
+            rhapi.ui.socket_send('relay_retarget_result', {
+                'ok': False, 'refused': True, 'usb_port': usb_port,
+                'error': 'active race'})
+            return
+        if not USB_LOCK.acquire(blocking=False):
+            rhapi.ui.socket_send('relay_retarget_result', {
+                'ok': False, 'usb_port': usb_port, 'error': 'busy'})
+            return
+        spawn('relay_retarget_result',
+              lambda: provision.provision_relay(
+                  usb_port, host, port_num, gateway_nodes=gateway_watcher()),
+              {'usb_port': usb_port, 'host': host, 'port': port_num})
+
     def page():
         if not check_auth(ctx, request.authorization):
             return _authenticate()
@@ -216,6 +332,8 @@ def initialize(rhapi):
             'Debug': ctx.serverconfig.get_item('GENERAL', 'DEBUG'),
             'restart_flag': ctx.serverstate.restart_required,
             'usb_environments': sorted(firmware_flash.FLASH_ENVS),
+            'relay_ports': local_ports(),
+            'gateway': dict(zip(('host', 'port'), gateway_cfg())),
         })
 
     rhapi.config.register_section(SECTION)
@@ -236,6 +354,13 @@ def initialize(rhapi):
                 persistent_section=SECTION,
                 desc=rhapi.__('Cached .bin per injected IP; empty to disable.')
                 ),
+        UIField('GATEWAY_HOST', rhapi.__('Gateway host'),
+                UIFieldType.TEXT, value='', persistent_section=SECTION,
+                desc=rhapi.__('LAN address of the gateway (serve.mjs) this '
+                              'relay should dial.')),
+        UIField('GATEWAY_PORT', rhapi.__('Gateway port'),
+                UIFieldType.TEXT, value='', persistent_section=SECTION,
+                desc=rhapi.__('Port of the gateway, e.g. 8011.')),
     ]:
         rhapi.fields.register_option(field, PANEL)
 
@@ -243,7 +368,11 @@ def initialize(rhapi):
                           ('usb_probe_dev', on_probe),
                           ('usb_flash', on_flash),
                           ('usb_provision', on_provision),
-                          ('usb_test', on_test)]:
+                          ('usb_test', on_test),
+                          ('relay_refresh', on_relay_refresh),
+                          ('relay_tag', on_relay_tag),
+                          ('relay_unbind', on_relay_unbind),
+                          ('relay_retarget', on_relay_retarget)]:
         rhapi.ui.socket_listen(name, handler, requires_auth=True)
 
     BLUEPRINT.add_url_rule('/usbflash', 'usbflash', page)
