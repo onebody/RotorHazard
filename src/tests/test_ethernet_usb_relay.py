@@ -455,6 +455,15 @@ class RelayPage(unittest.TestCase):
             self.assertIn(marker, body)
         self.assertIn('relay_refresh', body)
 
+    def test_merged_page_also_carries_the_ethernet_nodes_section(self):
+        '''合并页：以太网节点区块与 USB 设备同页（原 settings 面板已移除）。'''
+        response = server.APP.test_client().get('/usbflash')
+        self.assertEqual(200, response.status_code)
+        body = response.data.decode()
+        for marker in ('eth-local-nodes', 'eth-candidates', 'eth-nodes',
+                       'eth-stats', 'eth-reload', 'load_ethnodes'):
+            self.assertIn(marker, body)
+
 
 class InjectionGuards(unittest.TestCase):
     def setUp(self):

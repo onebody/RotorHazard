@@ -1,6 +1,6 @@
-{# RH-ENE 以太网节点管理面板内容（共享 fragment）。
-   由 settings.html（硬件/节点区 panel）与 ethnodes.html（独立深链页）共同 include。
-   外层 panel/main 包装由 includer 提供；本 fragment 只含内容 + 自足 JS。 #}
+{# RH-ENE 以太网节点管理区块（共享 fragment）。
+   由插件合并页 usbflash.html include（与 USB 设备同页）；本 fragment 只含内容
+   与自足 JS，标题/包装由 includer 提供。 #}
 <p>{{ __('ENP-W distributed timing nodes. Discovery only records candidates; confirming a node admits it and assigns seats. Seat and whitelist changes are allowed only while the race is READY.') }}</p>
 
 <div class="control-set">
@@ -149,10 +149,10 @@
 		socket.on('ethnodes_status', render_status);
 		// 自足：不依赖 includer 的 data_dependencies。连接建立即拉语言与状态；
 		// language 事件到达后（interface_language 此时已就绪）再渲染一次，避免首帧
-		// ethnodes_status 抢在 language 之前到达时动态文案回退成英文。独立页 /ethnodes
-		// 没有 settings 的 language 处理器，故这里自行就绪 interface_language；
-		// all_languages 提供译文表（rotorhazard.js 全局处理器填充 language_strings），
-		// 到达后再渲染一次，确保独立页动态文案也能查到译文。
+		// ethnodes_status 抢在 language 之前到达时动态文案回退成英文。合并页
+		// /usbflash 自行就绪 interface_language；all_languages 提供译文表
+		// （rotorhazard.js 全局处理器填充 language_strings），到达后再渲染一次，
+		// 确保动态文案也能查到译文。
 		socket.on('language', function (msg) {
 			if (msg && typeof msg.language !== 'undefined') { rotorhazard.interface_language = msg.language; }
 			request_status();
@@ -180,15 +180,5 @@
 		$('#eth-reload').click(function () {
 			socket.emit('ethnodes_reload', {});
 		});
-
-		// 从导航 /settings#ethnodes 进入时自动展开硬件区里的本 panel。
-		if (window.location.hash === '#ethnodes') {
-			var $p = $('#ethnodes');
-			if ($p.length) {
-				$p.addClass('open');
-				$p.children('.panel-content').show();
-				$p[0].scrollIntoView();
-			}
-		}
 	});
 </script>

@@ -1,6 +1,8 @@
-{% extends "layout.html" %} {% block title %}{{ __('USB devices') }}{% endblock %} {% block content %}
+{% extends "layout.html" %} {% block title %}{{ __('USB devices') }} / {{ __('Ethernet Nodes') }}{% endblock %} {% block content %}
 <main class="page-settings">
-<h2>{{ __('USB devices') }}</h2>
+<h2>{{ __('USB devices') }} / {{ __('Ethernet Nodes') }}</h2>
+
+<h3>{{ __('USB devices') }}</h3>
 <p>{{ __('Select USB devices to flash firmware or provision a relay in one step. Flashing always asks for confirmation first.') }}</p>
 
 <div class="control-set">
@@ -53,7 +55,9 @@
 	<div id="usb-log" style="max-height:20em;overflow-y:auto;font-family:monospace;font-size:0.9em"></div>
 </div>
 
-<p><a href="/ethnodes">{{ __('Ethernet Nodes') }}</a></p>
+<h3>{{ __('Ethernet Nodes') }}</h3>
+{# 合并页：以太网节点区块原为 settings 面板与 /ethnodes 独立页共用，现统一并入本页。 #}
+{% include 'ethnodes_panel.html' %}
 
 <script type="text/javascript" charset="utf-8">
 	$(document).ready(function () {

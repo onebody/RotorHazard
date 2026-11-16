@@ -340,8 +340,10 @@ def initialize(rhapi):
         })
 
     rhapi.config.register_section(SECTION)
-    rhapi.ui.register_panel(PANEL, rhapi.__('USB devices'), 'settings', 0, False)
-    link_md = rhapi.__('USB devices') + ': [/usbflash](/usbflash)'
+    # 合并页：USB 设备与以太网节点现为同一页面（/usbflash），设置页只留这一个面板。
+    panel_title = rhapi.__('USB devices / Ethernet Nodes')
+    rhapi.ui.register_panel(PANEL, panel_title, 'settings', 0, False)
+    link_md = panel_title + ': [/usbflash](/usbflash)'
     # 元组顺序与 InjectionGuards 的解包一致：(name, panel, text)
     REGISTERED_MARKDOWN.append(('usb_flash_link', PANEL, link_md))
     rhapi.ui.register_markdown(PANEL, 'usb_flash_link', link_md)

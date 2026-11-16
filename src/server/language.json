@@ -4206,6 +4206,7 @@
             "Team Lap Total": "团队总圈数",
             "Temperature:": "温度：",
             "Ethernet Nodes": "以太网节点",
+            "USB devices": "USB 设备",
             "ENP-W distributed timing nodes. Discovery only records candidates; confirming a node admits it and assigns seats. Seat and whitelist changes are allowed only while the race is READY.": "ENP-W 分布式计时节点。发现仅记录候选节点；确认节点后才会接入并分配座位。座位与白名单的修改仅允许在比赛处于 READY（就绪）状态时进行。",
             "Subsystem": "子系统",
             "Uplink": "上行链路",

@@ -1,7 +1,8 @@
-'''Phase 2.4d：以太网节点确认/移除/重载/状态的 Socket.IO 入口 + /ethnodes 核心路由。
+'''Phase 2.4d：以太网节点确认/移除/重载/状态的 Socket.IO 入口 + /ethnodes 旧深链。
 
-用 test_server.py 同款夹具。只验事件接线、READY 门（C-3）与页面可渲染；
+用 test_server.py 同款夹具。只验事件接线、READY 门（C-3）与旧深链跳转；
 node_status 的字段形状由 test_ethernet_assembly 覆盖，这里不重复。
+以太网节点 UI 已与 USB 设备合并到 /usbflash，本文件的页面用例只验 301。
 浏览器内的点击交互未实测（见审计报告 §8.11 的显式声明）。
 
 运行：cd src/tests && python -m unittest test_ethernet_ui
@@ -78,12 +79,13 @@ class EthernetUI(unittest.TestCase):
         return self.find(self.client.get_received(), event)
 
     #
-    # 核心路由（N-1：不做 blueprint_add）
+    # 旧深链（页面已并入 /usbflash）
     #
 
-    def test_the_ethnodes_page_renders(self):
+    def test_the_ethnodes_page_redirects_to_the_merged_page(self):
         response = server.APP.test_client().get('/ethnodes')
-        self.assertEqual(200, response.status_code)
+        self.assertEqual(301, response.status_code)
+        self.assertTrue(response.headers['Location'].endswith('/usbflash'))
 
     #
     # 状态读取

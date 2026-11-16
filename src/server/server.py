@@ -4028,9 +4028,8 @@ def _ethnodes_refuse_if_racing():
 @APP.route('/ethnodes')
 @requires_auth
 def render_ethnodes():
-    '''以太网节点管理页（N-1：核心路由，不走插件 blueprint_add）。'''
-    return render_template('ethnodes.html',
-                           enabled=ethernet_nodes.NodeRegistry(RaceContext.serverconfig).enabled)
+    '''以太网节点页已与 USB 设备页合并：旧深链 301 到 /usbflash（插件提供合并页）。'''
+    return redirect('/usbflash', code=301)
 
 @SOCKET_IO.on('load_ethnodes')
 @requires_socketio_auth

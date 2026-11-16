@@ -142,13 +142,15 @@ class UsbEndpoints(unittest.TestCase):
         self.assertEqual('relay', payload['device']['kind'])
         self.assertEqual(1200, payload['device']['uptime_ms'])
 
-    def test_the_plugin_page_route_renders_the_usb_panel(self):
-        '''blueprint 路由 /usbflash 由插件自己提供（核心页不含 USB 区块）。'''
+    def test_the_plugin_page_route_renders_the_merged_panel(self):
+        '''合并页：blueprint 路由 /usbflash 同时承载 USB 设备与以太网节点区块。'''
         response = server.APP.test_client().get('/usbflash')
         self.assertEqual(200, response.status_code)
         body = response.data.decode()
         for marker in ('usb-select', 'usb-do-flash', 'usb-do-provision',
-                       'usb-do-test', 'usb_list'):
+                       'usb-do-test', 'usb_list',
+                       'eth-local-nodes', 'eth-candidates', 'eth-nodes',
+                       'eth-reload', 'load_ethnodes'):
             self.assertIn(marker, body)
         self.assertIn('esp32s3-relay', body)
 
