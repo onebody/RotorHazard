@@ -94,6 +94,8 @@
 		// 插件页面：所有来自网络播报的字段（port/version/error）一律 .text() 注入，杜绝 XSS。
 		// 一次只发一个串口任务（服务端互斥），任务进行中按钮统一禁用。
 		var usbBusy = false;
+		var usbListPending = false;
+		var usbListRetry = 0;
 		var usbSelected = null;
 		var usbDeviceTarget = null;
 
@@ -165,7 +167,30 @@
 			if (gw.port) { $('#usb-gw-port').val(gw.port); }
 		}
 
+		function request_usb_list() {
+			// language 与 connect 各来一发时只发一次：一次枚举要占串口锁约 5 秒，
+			// 重复请求只会让后到的那次回 busy，按钮跟着被关掉。
+			if (usbListPending) { return; }
+			usbListPending = true;
+			socket.emit('usb_list', {});
+		}
+
 		function render_usb_devices(payload) {
+			usbListPending = false;
+			// 刷新页面时，上一页发起的枚举还在服务端占着串口锁：不重试用就会停在
+			// 空表上（看起来像「刷新失败」）。等它结束再自动拉，最多 8 次 ≈ 12 秒。
+			if (payload.busy) {
+				if (usbListRetry < 8) {
+					usbListRetry += 1;
+					usb_log(__('Waiting for the running USB job to finish') +
+						' (' + usbListRetry + ')');
+					setTimeout(request_usb_list, 1500);
+				} else {
+					usb_log(__('A USB job is running'));
+				}
+				return;
+			}
+			usbListRetry = 0;
 			var $sel = $('#usb-select').empty();
 			$sel.append($('<option>').attr('value', '').text(__('Select a USB device')));
 			var devices = payload.devices || [];
@@ -201,8 +226,14 @@
 				' · ' + (d.version || '—') + ' · ' +
 				__('Uptime') + ' ' + (d.uptime_ms === null ? '—' : d.uptime_ms + 'ms')];
 			if (d.kind === 'relay' && d.net_status) {
-				lines.push(__('Uplink') + ': ' + (d.net_status.url || '—') +
-					' · ' + (d.net_status.ip4 || '—'));
+				// 选中即读回板上现状：当前 SSID 与是否真的连上（有 ip4 才算连上）。
+				var net = d.net_status;
+				var ip4 = (net.ip4 && net.ip4 !== 'none') ? net.ip4 : null;
+				var joined = !!ip4 && (net.sta === 3 || net.sta === true);
+				lines.push(__('WiFi SSID') + ': ' + (net.ssid || '—') + ' · ' +
+					(joined ? __('WiFi connected') : __('WiFi not connected')));
+				lines.push(__('Uplink') + ': ' + (net.url || '—') + ' · ' +
+					(ip4 || '—'));
 			}
 			if (d.kind === 'eth' || d.kind === 'c5') {
 				lines.push(__('Build-time IP') + ': ' + (d.cached_ip || '—'));
@@ -245,7 +276,7 @@
 				? __('Settings saved')
 				: (r.error || __('Settings save failed')));
 			apply_settings(r.settings);
-			socket.emit('usb_list', {});
+			request_usb_list();
 		});
 		socket.on('usb_test_result', function (r) {
 			usb_set_busy(false);
@@ -255,7 +286,7 @@
 		});
 
 		$('#usb-refresh').click(function () {
-			socket.emit('usb_list', {});
+			request_usb_list();
 		});
 		$('#usb-check').click(function () {
 			if (usbSelected && !usbBusy) {
@@ -345,6 +376,31 @@
 					socket.emit('relay_unbind', { node_port: row.bound_port });
 				}));
 			}
+			// 重连：可留空沿用板上已存凭据；填了 SSID 就先 NET SSID/PASS/SAVE 再重连。
+			var reconnect = $('<div>').css({ display: 'none', 'margin-top': '4px' });
+			var ssidInput = $('<input>').attr({ type: 'text', size: 12,
+				placeholder: '{{ __("SSID (leave blank to keep the saved one)") }}' });
+			var passInput = $('<input>').attr({ type: 'password', size: 12,
+				placeholder: '{{ __("Password (leave blank to keep the saved one)") }}' });
+			reconnect.append(ssidInput, ' ', passInput, ' ',
+				$('<button>').text('{{ __("Reconnect") }}').click(function () {
+					$(this).prop('disabled', true);
+					var ssid = $.trim(ssidInput.val());
+					// 密码绝不进日志。
+					usb_log('{{ __("Reconnect WiFi") }}: ' + (row.mac || row.port)
+						+ (ssid ? ' · ' + ssid : ''));
+					socket.emit('relay_reconnect', {
+						usb_port: row.port, ssid: ssid, password: passInput.val()
+					});
+					passInput.val('');
+				}),
+				$('<button>').text('{{ __("Cancel") }}').click(function () {
+					reconnect.hide();
+				}));
+			actions.append($('<button>').text('{{ __("Reconnect WiFi") }}').click(function () {
+				if (reconnect.is(':visible')) { reconnect.hide(); } else { reconnect.show(); }
+			}));
+			actions.append(reconnect);
 			if (row.command) {
 				actions.append($('<div>').css('font-size', '0.85em')
 					.text('{{ __("Run this to bring the port up") }}: ' + row.command));
@@ -382,6 +438,21 @@
 			usb_log('relay retarget: ' + (r.ok ? 'OK' : (r.error || 'failed')));
 			socket.emit('relay_refresh', {});
 		});
+		socket.on('relay_reconnect_result', function (r) {
+			var text;
+			if (!r.ok) {
+				text = r.error || 'failed';
+			} else if (r.online) {
+				text = '{{ __("Relay online") }}';
+			} else if (r.wifi) {
+				text = '{{ __("WiFi connected") }}' + (r.ip4 ? ' · ' + r.ip4 : '')
+					+ ' · {{ __("Relay not seen online yet") }}';
+			} else {
+				text = '{{ __("WiFi not connected") }}';
+			}
+			usb_log('{{ __("Reconnect WiFi") }}: ' + text + (r.url ? ' · ' + r.url : ''));
+			socket.emit('relay_refresh', {});
+		});
 		$('#relay-refresh').click(function () { socket.emit('relay_refresh', {}); });
 
 		// 自足：连接建立即拉语言与设备列表；language 到达后再拉一次，避免首帧
@@ -389,11 +460,14 @@
 		function request_language() { socket.emit('load_data', { load_types: ['language', 'all_languages'] }); }
 		socket.on('language', function (msg) {
 			if (msg && typeof msg.language !== 'undefined') { rotorhazard.interface_language = msg.language; }
-			socket.emit('usb_list', {});
+			request_usb_list();
 		});
-		socket.on('all_languages', function () { socket.emit('usb_list', {}); });
-		socket.on('connect', function () { request_language(); socket.emit('usb_list', {}); socket.emit('relay_refresh', {}); });
-		if (socket.connected) { request_language(); socket.emit('usb_list', {}); socket.emit('relay_refresh', {}); }
+		// all_languages 紧跟着 language 到，这里不再重复枚举：一次 usb_list 要占
+		// 串口锁约 5 秒，多发一次会让首屏按钮在这段时间里都回 busy。
+		// 中继表由服务端在 usb_list 回包里顺带广播（复用同一次枚举），
+		// 页面不再单独发 relay_refresh 去撞锁。
+		socket.on('connect', function () { request_language(); request_usb_list(); });
+		if (socket.connected) { request_language(); request_usb_list(); }
 	});
 </script>
 </main>

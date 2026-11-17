@@ -4,7 +4,7 @@
 源 2  网关 GET /api/nodes
 源 3  配置 LOCAL_NODES.PORT_TAGS + mapper 里的 RH 串口口列表
 
-中继的 USB 口（配置走它）与 RH 看到的 PTY 口（node_bridge 起的那个，数据走它）
+中继的 USB 口（配置走它）与 RH 看到的 PTY 口（bridge.py 起的那个，数据走它）
 不是同一个东西，local_nodes 那行里也没有中继身份 ⇒ 「这块中继有没有接上 RH」
 推不出来，只能显式绑定。绑定键是 relay_mac，写进 PORT_TAGS 的值里；这是纯增项
 ——核心 local_nodes.py 只读 label / transport，多一个 key 照旧渲染。
@@ -92,11 +92,17 @@ def drop_tag(tags, port):
 
 
 def bridge_command(node):
-    '''missing 态的补齐命令原文（插件绝不代跑进程）。'''
+    '''missing 态的补齐命令原文（插件绝不代跑进程）。
+
+    带上 --link：openpty() 的从端名每次都不同，不钉成固定路径，RH 的
+    SERIAL_PORTS 每轮都得重写并重启（这正是「桥活着但 RH 打不开」的来源）。
+    '''
     url = (node or {}).get('bridge')
     if not url:
         return None
-    return "python tools/real_laps_c/node_bridge.py --url '{}'".format(url)
+    node_id = (node or {}).get('id') or 'node'
+    link = '/tmp/rh-' + ''.join(c if c.isalnum() else '-' for c in node_id)
+    return "python tools/real_laps_c/bridge.py --to '{}' --link '{}'".format(url, link)
 
 
 def relay_rows(devices, gateway_payload, tags, local_ports, gw_host, gw_port):

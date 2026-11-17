@@ -4001,20 +4001,164 @@ def reload_ethernet_nodes():
 # RH-ENE：以太网节点管理入口（N-4 状态读取 + D-2 确认/移除 + C-3 READY 态重载）
 #
 
+SERIAL_NODE_KEY = 'serial:'
+ETH_NODE_KEY = 'eth:'
+
 def _ethnode_interface():
     for meta in RaceContext.interface.mapped_interfaces:
         if meta.type == InterfaceType.ETHNODE:
             return meta.interface
     return None
 
+def _ethnode_seat_offset():
+    '''ETHNODE 接口前面还挂了几个座位：面板要显示与竞速座位一一对应的绝对座位号。'''
+    offset = 0
+    for meta in RaceContext.interface.mapped_interfaces:
+        if meta.type == InterfaceType.ETHNODE:
+            break
+        offset += len(meta.interface.nodes)
+    return offset
+
+def _ethnodes_uplink(interface):
+    '''上行链路只有三种真实状态：绑上了 / 绑失败 / 未挂载（D-8 附带裁定③）。'''
+    if interface is None:
+        return {'state': 'unmounted', 'detail': None}
+    if interface.ready:
+        return {'state': 'ready', 'detail': None}
+    return {'state': 'failed', 'detail': interface.ready_failure_msg}
+
+def _serial_node_rows(local):
+    rows = []
+    for device in local:
+        seats = device['seat_indices']
+        rows.append({
+            'key': SERIAL_NODE_KEY + device['port'],
+            'kind': 'serial',
+            'name': device['label'],
+            'transport': device['transport'],
+            'address': device['port'],
+            'seats': device['seats'],
+            'first_seat': min(seats) + 1 if seats else None,
+            'firmware': device['firmware_version'],
+            'api': device['api_level'],
+            'online': device['identified'],
+            'present': device['present'],
+            'offset_ms': None,
+            'clock_suspect': False,
+            'enabled': device['enabled'],
+        })
+    return rows
+
+def _eth_node_rows(status, interface):
+    '''注册表条目才是「这台节点接入过」的权威：子系统关着也照样列出来（只是未生效）。'''
+    candidates = {candidate['uid']: candidate for candidate in status['candidates']}
+    sessions = {}
+    if interface is not None:
+        sessions = {session.node_uid: session for session in interface.sessions.values()
+                    if not session.superseded}
+    offset = _ethnode_seat_offset()
+    rows = []
+    for entry in ethernet_nodes.NodeRegistry(RaceContext.serverconfig).entries:
+        session = sessions.get(entry['uid'])
+        announce = candidates.get(entry['uid']) or {}
+        rows.append({
+            'key': ETH_NODE_KEY + entry['uid'],
+            'kind': 'eth',
+            'name': announce.get('device_type') or entry['uid'],
+            'transport': 'ethernet',
+            'address': entry['uid'],
+            'seats': entry['channels'],
+            'first_seat': offset + entry['first_seat'] + 1,
+            'firmware': announce.get('firmware_version'),
+            'api': ethernet_nodes.NODE_API_LEVEL,
+            'online': bool(session and not session.offline),
+            'present': session is not None,
+            'offset_ms': session.offset_ms if session else None,
+            'clock_suspect': bool(session and session.clock_suspect),
+            'enabled': bool(entry['admitted']) and status['enabled'],
+        })
+    return rows
+
 def _ethnodes_status():
-    status = ethernet_nodes.node_status(_ethnode_interface(),
-                                        ethernet_nodes.NodeRegistry(RaceContext.serverconfig))
+    config = RaceContext.serverconfig
+    registry = ethernet_nodes.NodeRegistry(config)
+    interface = _ethnode_interface()
+    status = ethernet_nodes.node_status(interface, registry)
     # RH-ENE 增量2：纯新增 local_nodes 键，显示串口原生（有线/无线桥接）计时设备；
     # 不改动 ENP-W 的 candidates/nodes/stats 任何字段。
-    status['local_nodes'] = ethernet_nodes.local_node_status(
-        RaceContext.interface, RaceContext.serverconfig)
+    local = ethernet_nodes.local_node_status(RaceContext.interface, config)
+    status['local_nodes'] = local
+    status['subsystem'] = {'enabled': registry.enabled}
+    status['uplink'] = (_ethnodes_uplink(interface) if registry.enabled
+                        else {'state': 'off', 'detail': None})
+    # 统一节点表：串口原生 + 以太网节点（含已停用的注册表条目）一次给全。
+    status['nodes_all'] = _serial_node_rows(local) + _eth_node_rows(status, interface)
+    status['active'] = [row['key'] for row in status['nodes_all'] if row['enabled']]
     return status
+
+def _serial_ports():
+    return list(RaceContext.serverconfig.get_item('GENERAL', 'SERIAL_PORTS') or [])
+
+def _remember_local_ports(ports):
+    '''停用/切换前先记住串口口：离开 GENERAL.SERIAL_PORTS 后，面板还得列得出来。'''
+    config = RaceContext.serverconfig
+    known = list(config.get_item('LOCAL_NODES', 'PORTS') or [])
+    changed = False
+    for port in ports:
+        if port and port not in known:
+            known.append(port)
+            changed = True
+    if changed:
+        config.set_item('LOCAL_NODES', 'PORTS', known)
+
+def _unadmit_eth_nodes(keep_uid=None):
+    '''单一启用：除 keep_uid 外全部摘白名单（C-4：座位占位保留不动）。'''
+    registry = ethernet_nodes.NodeRegistry(RaceContext.serverconfig)
+    ok = True
+    for entry in registry.entries:
+        if entry['admitted'] and entry['uid'] != keep_uid:
+            ok = registry.remove(entry['uid']) and ok
+    return ok
+
+def _set_active_node(key, channels=None):
+    '''面板的「启用」只允许单选：写配置让恰好一个节点生效。
+
+    key 形如 'serial:<串口口>' / 'eth:<节点 UID>'；空串 = 全部停用。
+    串口节点靠 GENERAL.SERIAL_PORTS（RH 只扫这份清单），以太网节点靠白名单，
+    所以「启用谁」= 把另一边的入口清掉。调用方负责 READY 门与重载。
+    '''
+    key = (key or '').strip()
+    config = RaceContext.serverconfig
+
+    if key.startswith(SERIAL_NODE_KEY):
+        port = key[len(SERIAL_NODE_KEY):]
+        if not port:
+            return False
+        _remember_local_ports(_serial_ports() + [port])
+        ok = config.set_item('GENERAL', 'SERIAL_PORTS', [port])
+        return _unadmit_eth_nodes() and ok
+
+    if key.startswith(ETH_NODE_KEY):
+        uid = key[len(ETH_NODE_KEY):]
+        registry = ethernet_nodes.NodeRegistry(config)
+        entry = next((item for item in registry.entries if item['uid'] == uid), None)
+        if channels is None:
+            channels = entry['channels'] if entry else None
+        if not uid or not channels:
+            return False
+        _remember_local_ports(_serial_ports())
+        # 先写入白名单再摘掉其他人：confirm 失败时不动已在用的节点
+        ok = registry.confirm(uid, channels)
+        ok = _unadmit_eth_nodes(keep_uid=uid) and ok
+        ok = config.set_item('GENERAL', 'SERIAL_PORTS', []) and ok
+        ok = config.set_item('ETHERNET_NODES', 'ENABLED', True) and ok
+        return ok
+
+    if key:
+        return False  # 认不出的 key 不猜
+    _remember_local_ports(_serial_ports())
+    ok = config.set_item('GENERAL', 'SERIAL_PORTS', [])
+    return _unadmit_eth_nodes() and ok
 
 def _ethnodes_refuse_if_racing():
     '''C-3：赛中不得改座位/白名单。返回 True 表示已拒绝，调用方应跳过写入。'''
@@ -4041,10 +4185,41 @@ def on_load_ethnodes(data):
 @requires_socketio_auth
 @catchLogExcWithDBWrapper
 def on_ethnodes_confirm(data):
-    '''D-2：发现 ≠ 接入——确认动作把 uid 写进白名单并预排座位，随后 READY 态重载。'''
+    '''D-2：发现 ≠ 接入——确认动作把 uid 写进白名单并预排座位，随后 READY 态重载。
+
+    面板的「启用」只允许单选，所以这条确认路径也走 _set_active_node：
+    接入这台以太网节点的同时会停用其他来源（串口口从扫描清单里让位）。
+    '''
+    data = data or {}
     if not _ethnodes_refuse_if_racing():
-        ethernet_nodes.NodeRegistry(RaceContext.serverconfig).confirm(
-            data.get('uid'), data.get('channels'))
+        _set_active_node(ETH_NODE_KEY + str(data.get('uid') or ''),
+                         data.get('channels'))
+        reload_ethernet_nodes()
+    emit('ethnodes_status', _ethnodes_status())
+
+@SOCKET_IO.on('ethnodes_activate')
+@requires_socketio_auth
+@catchLogExcWithDBWrapper
+def on_ethnodes_activate(data):
+    '''面板统一节点表的「启用」：同一时刻只让一个节点生效，空 key = 全部停用。'''
+    data = data or {}
+    if not _ethnodes_refuse_if_racing():
+        if _set_active_node(data.get('key'), data.get('channels')):
+            reload_ethernet_nodes()
+        else:
+            RaceContext.rhui.emit_priority_message(
+                __('Unable to enable the selected node'), False)
+    emit('ethnodes_status', _ethnodes_status())
+
+@SOCKET_IO.on('ethnodes_subsystem')
+@requires_socketio_auth
+@catchLogExcWithDBWrapper
+def on_ethnodes_subsystem(data):
+    '''子系统开关：关掉就不再监听 ENP-W（候选节点也随之消失）。'''
+    data = data or {}
+    if not _ethnodes_refuse_if_racing():
+        RaceContext.serverconfig.set_item('ETHERNET_NODES', 'ENABLED',
+                                          bool(data.get('enabled')))
         reload_ethernet_nodes()
     emit('ethnodes_status', _ethnodes_status())
 

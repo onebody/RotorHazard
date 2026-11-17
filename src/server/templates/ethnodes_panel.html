@@ -1,25 +1,36 @@
-{# RH-ENE 以太网节点管理区块（共享 fragment）。
+{# RH-ENE 以太网节点/本地节点管理区块（共享 fragment）。
    由插件合并页 usbflash.html include（与 USB 设备同页）；本 fragment 只含内容
-   与自足 JS，标题/包装由 includer 提供。 #}
-<p>{{ __('ENP-W distributed timing nodes. Discovery only records candidates; confirming a node admits it and assigns seats. Seat and whitelist changes are allowed only while the race is READY.') }}</p>
+   与自足 JS，标题/包装由 includer 提供。
+
+   2026-11-16 用户裁定：所有接入过的节点（串口原生 / 无线桥接 / 以太网）合并成
+   一张表列出；「启用」是单选——同一时刻只允许一个节点生效，启用新节点会停用旧
+   节点（串口口从 GENERAL.SERIAL_PORTS 让位、以太网节点摘白名单）。 #}
+<p>{{ __('All connected timing nodes are listed below. Only one node can be enabled at a time; enabling another node disables the previous one and re-assigns seats.') }}</p>
 
 <div class="control-set">
 	<b>{{ __('Subsystem') }}:</b> <span id="eth-enabled">{{ __('Loading...') }}</span>
-	&nbsp;|&nbsp; <b>{{ __('Uplink') }}:</b> <span id="eth-ready"></span>
+	<button id="eth-subsystem-toggle"></button>
+	&nbsp;|&nbsp; <b>{{ __('Ethernet uplink') }}:</b> <span id="eth-uplink"></span>
 	<span id="eth-failure" class="priority-message"></span>
 	&nbsp; <button id="eth-reload">{{ __('Reload') }}</button>
 </div>
+<div class="control-set">
+	<b>{{ __('Active node') }}:</b> <span id="eth-active"></span>
+	<span id="eth-conflict" class="priority-message"></span>
+</div>
 
-<h3>{{ __('Local timing nodes') }}</h3>
+<h3>{{ __('Timing nodes') }}</h3>
 <table class="settings-table">
 	<thead>
 		<tr>
-			<th>{{ __('Name') }}</th><th>{{ __('Transport') }}</th><th>{{ __('Port') }}</th>
+			<th>{{ __('Name') }}</th><th>{{ __('Type') }}</th><th>{{ __('Address') }}</th>
+			<th>{{ __('Link') }}</th>
 			<th>{{ __('Seats') }}</th><th>{{ __('Firmware') }}</th><th>{{ __('API') }}</th>
-			<th>{{ __('Status') }}</th>
+			<th>{{ __('Online') }}</th><th>{{ __('Clock offset (ms)') }}</th>
+			<th>{{ __('Status') }}</th><th>{{ __('Action') }}</th>
 		</tr>
 	</thead>
-	<tbody id="eth-local-nodes"></tbody>
+	<tbody id="eth-node-rows"></tbody>
 </table>
 
 <h3>{{ __('Discovered candidates') }}</h3>
@@ -33,55 +44,121 @@
 	<tbody id="eth-candidates"></tbody>
 </table>
 
-<h3>{{ __('Matched nodes') }}</h3>
-<table class="settings-table">
-	<thead>
-		<tr>
-			<th>{{ __('Node UID') }}</th><th>{{ __('First seat') }}</th><th>{{ __('Channels') }}</th>
-			<th>{{ __('Admitted') }}</th><th>{{ __('Link') }}</th><th>{{ __('Offset (ms)') }}</th>
-			<th>{{ __('Clock') }}</th><th>{{ __('Action') }}</th>
-		</tr>
-	</thead>
-	<tbody id="eth-nodes"></tbody>
-</table>
-
 <h3>{{ __('Network quality') }}</h3>
 <ul id="eth-stats"></ul>
 
 <script type="text/javascript" charset="utf-8">
 	$(document).ready(function () {
-		// 所有来自网络播报的字段（uid/device_type/firmware）一律用 .text() 注入，杜绝 XSS。
-		function render_status(s) {
-			$('#eth-enabled').text(s.enabled ? __('Enabled') : __('Disabled'));
-			$('#eth-ready').text(s.ready ? __('Ready') : __('Not ready'));
-			$('#eth-failure').text(s.ready_failure_msg || '');
+		// 所有来自网络播报的字段（uid/device_type/firmware/port）一律用 .text() 注入，杜绝 XSS。
+		var ETH_ENABLED = false;
+		// 中继表（同一合并页上方）由插件广播；这里只读它的在线状态，用来给串口节点
+		// 补一条无线链路信息。注意它只说「中继→网关这条无线链路通不通」，不区分
+		// 承载的是哪台接收机——本部署是一台 C5 的直连/无线两条上行，故挂在同一行。
+		var RELAYS = [];
+		var RELAYS_LOADED = false;
+		var LAST_STATUS = null;
 
-			// 增量2：本地串口原生设备（有线 USB / 无线桥接），传输标签来自配置。
-			function transport_label(t) {
-				if (t === 'wired') { return __('Wired'); }
-				if (t === 'wireless') { return __('Wireless'); }
-				return __('Untagged');
+		function wireless_state() {
+			if (!RELAYS_LOADED) { return 'unknown'; }
+			var rows = RELAYS.filter(function (r) { return r.net_status; });
+			if (!rows.length) { return 'none'; }
+			return rows.some(function (r) { return r.net_status.on; })
+				? 'online' : 'offline';
+		}
+
+		function link_label(row) {
+			if (row.kind === 'eth') { return __('Ethernet'); }
+			if (row.transport === 'wireless') { return __('Wireless bridge'); }
+			var state = wireless_state();
+			var label = row.transport === 'wired' ? __('Wired') : __('Serial (untagged)');
+			if (state === 'online') { return label + ' · ' + __('Wireless relay online'); }
+			if (state === 'offline') { return label + ' · ' + __('Wireless relay offline'); }
+			if (state === 'none') { return label + ' · ' + __('No wireless relay'); }
+			return label;
+		}
+
+		function transport_label(row) {
+			if (row.kind === 'eth') { return __('Ethernet'); }
+			if (row.transport === 'wired') { return __('Wired'); }
+			if (row.transport === 'wireless') { return __('Wireless bridge'); }
+			return __('Serial (untagged)');
+		}
+		function online_label(row) {
+			if (!row.present) { return __('Offline'); }
+			if (row.kind === 'serial' && !row.online) { return __('Unidentified'); }
+			if (row.kind === 'eth' && !row.online) { return __('Waiting for uplink'); }
+			return __('Online');
+		}
+		function seat_label(row) {
+			if (!row.seats) { return '—'; }
+			if (row.first_seat === null) { return String(row.seats); }
+			return row.first_seat + '–' + (row.first_seat + row.seats - 1) +
+				' (' + row.seats + ')';
+		}
+		function clock_label(row) {
+			if (row.kind !== 'eth' || row.offset_ms === null || row.offset_ms === undefined) {
+				return '—';
 			}
-			var $l = $('#eth-local-nodes').empty();
-			var local = s.local_nodes || [];
-			if (!local.length) {
-				$l.append($('<tr>').append($('<td colspan="7">').text(__('No local serial nodes'))));
+			return row.offset_ms + (row.clock_suspect ? ' · ' + __('Suspect') : '');
+		}
+
+		function render_status(s) {
+			LAST_STATUS = s;
+			ETH_ENABLED = !!(s.subsystem && s.subsystem.enabled);
+			$('#eth-enabled').text(ETH_ENABLED ? __('Enabled') : __('Disabled'));
+			$('#eth-subsystem-toggle').text(ETH_ENABLED
+				? __('Disable subsystem') : __('Enable subsystem'));
+
+			var up = s.uplink || {};
+			var UP_LABELS = {
+				off: __('Not enabled'),
+				ready: __('Ready'),
+				failed: __('Bind failed'),
+				unmounted: __('Enabled, not mounted')
+			};
+			$('#eth-uplink').text(UP_LABELS[up.state] || up.state || '—');
+			$('#eth-failure').text(up.detail || '');
+
+			var rows = s.nodes_all || [];
+			var active = s.active || [];
+			var names = [];
+			rows.forEach(function (row) {
+				if (active.indexOf(row.key) >= 0) { names.push(row.name); }
+			});
+			$('#eth-active').text(names.length ? names.join(', ') : __('None'));
+			$('#eth-conflict').text(active.length > 1
+				? __('Multiple nodes are enabled; only one is allowed') : '');
+
+			var $n = $('#eth-node-rows').empty();
+			if (!rows.length) {
+				$n.append($('<tr>').append($('<td colspan="11">')
+					.text(__('No timing nodes connected'))));
 			}
-			local.forEach(function (d) {
+			rows.forEach(function (row) {
 				var $tr = $('<tr>');
-				$tr.append($('<td>').text(d.label));
-				$tr.append($('<td>').text(transport_label(d.transport)));
-				$tr.append($('<td>').text(d.port));
-				$tr.append($('<td>').text(d.seats));
-				$tr.append($('<td>').text(d.firmware_version || '—'));
-				$tr.append($('<td>').text(d.api_level));
-				$tr.append($('<td>').text(d.identified ? __('Identified') : __('Unidentified')));
-				$l.append($tr);
+				$tr.append($('<td>').text(row.name));
+				$tr.append($('<td>').text(transport_label(row)));
+				$tr.append($('<td>').text(row.address));
+				$tr.append($('<td>').text(link_label(row)));
+				$tr.append($('<td>').text(seat_label(row)));
+				$tr.append($('<td>').text(row.firmware || '—'));
+				$tr.append($('<td>').text(row.api || '—'));
+				$tr.append($('<td>').text(online_label(row)));
+				$tr.append($('<td>').text(clock_label(row)));
+				$tr.append($('<td>').text(row.enabled ? __('Enabled') : __('Stopped')));
+				var $btn = row.enabled
+					? $('<button>').addClass('eth-deactivate').text(__('Disable'))
+					: $('<button>').addClass('eth-activate').text(__('Enable'))
+						.attr('data-key', row.key).attr('data-channels', row.seats);
+				$tr.append($('<td>').append($btn));
+				$n.append($tr);
 			});
 
 			var $c = $('#eth-candidates').empty();
 			if (!s.candidates.length) {
-				$c.append($('<tr>').append($('<td colspan="6">').text(__('No nodes discovered yet'))));
+				$c.append($('<tr>').append($('<td colspan="6">').text(
+					ETH_ENABLED ? __('No nodes discovered yet')
+						: __('Ethernet discovery is off; enable the subsystem to see nodes'))));
 			}
 			s.candidates.forEach(function (c) {
 				var $tr = $('<tr>');
@@ -90,38 +167,13 @@
 				$tr.append($('<td>').text(c.firmware_version));
 				$tr.append($('<td>').text(c.channels));
 				$tr.append($('<td>').text(c.confirmed ? __('Yes') : __('No')));
-				var $btn = $('<button>').addClass('eth-confirm').text(__('Confirm'))
-					.attr('data-uid', c.uid).attr('data-channels', c.channels);
+				var $btn = $('<button>').addClass('eth-activate')
+					.text(__('Enable'))
+					.attr('data-key', 'eth:' + c.uid)
+					.attr('data-channels', c.channels);
 				if (c.confirmed) { $btn.prop('disabled', true); }
 				$tr.append($('<td>').append($btn));
 				$c.append($tr);
-			});
-
-			var $n = $('#eth-nodes').empty();
-			if (!s.nodes.length) {
-				$n.append($('<tr>').append($('<td colspan="8">').text(__('No matched nodes yet'))));
-			}
-			s.nodes.forEach(function (n) {
-				var $tr = $('<tr>');
-				var $uid = $('<td>').text(n.uid);
-				$uid.append(' ').append($('<span>').addClass('transport-badge').text(__('Wired')));
-				$tr.append($uid);
-				$tr.append($('<td>').text(n.first_seat + 1));
-				$tr.append($('<td>').text(n.channels));
-				$tr.append($('<td>').text(n.admitted ? __('Yes') : __('No')));
-				$tr.append($('<td>').text(n.online ? __('Online') : __('Offline')));
-				$tr.append($('<td>').text(n.offset_ms === null ? '—' : n.offset_ms));
-				$tr.append($('<td>').text(n.clock_suspect ? __('Suspect') : __('OK')));
-				// 增量3：已匹配节点启停开关。停用=remove(留座位占位)；启用=confirm(无需重新广播)。
-				var $btn;
-				if (n.admitted) {
-					$btn = $('<button>').addClass('eth-remove').text(__('Disable')).attr('data-uid', n.uid);
-				} else {
-					$btn = $('<button>').addClass('eth-enable').text(__('Enable'))
-						.attr('data-uid', n.uid).attr('data-channels', n.channels);
-				}
-				$tr.append($('<td>').append($btn));
-				$n.append($tr);
 			});
 
 			// stats 键是协议侧 snake_case 计数器，映射成可读标签后再走 __() 本地化。
@@ -147,6 +199,13 @@
 		function request_status() { socket.emit('load_ethnodes', {}); }
 		function request_language() { socket.emit('load_data', { load_types: ['language', 'all_languages'] }); }
 		socket.on('ethnodes_status', render_status);
+		// 中继在线状态到了就重画一次，让「链路」列的无线状态跟上（同页插件广播）。
+		socket.on('relay_table', function (payload) {
+			if (payload && payload.busy) { return; }
+			RELAYS = (payload && payload.rows) || [];
+			RELAYS_LOADED = true;
+			if (LAST_STATUS) { render_status(LAST_STATUS); }
+		});
 		// 自足：不依赖 includer 的 data_dependencies。连接建立即拉语言与状态；
 		// language 事件到达后（interface_language 此时已就绪）再渲染一次，避免首帧
 		// ethnodes_status 抢在 language 之前到达时动态文案回退成英文。合并页
@@ -161,21 +220,17 @@
 		socket.on('connect', function () { request_language(); request_status(); });
 		if (socket.connected) { request_language(); request_status(); }
 
-		$(document).on('click', '.eth-confirm', function () {
-			socket.emit('ethnodes_confirm', {
-				uid: $(this).attr('data-uid'),
+		$(document).on('click', '.eth-activate', function () {
+			socket.emit('ethnodes_activate', {
+				key: $(this).attr('data-key'),
 				channels: parseInt($(this).attr('data-channels'), 10)
 			});
 		});
-		// 增量3：启用已停用的已匹配节点，走既有 confirm（同 uid 同 channels → admitted=True，无需重新广播）。
-		$(document).on('click', '.eth-enable', function () {
-			socket.emit('ethnodes_confirm', {
-				uid: $(this).attr('data-uid'),
-				channels: parseInt($(this).attr('data-channels'), 10)
-			});
+		$(document).on('click', '.eth-deactivate', function () {
+			socket.emit('ethnodes_activate', { key: '' });
 		});
-		$(document).on('click', '.eth-remove', function () {
-			socket.emit('ethnodes_remove', { uid: $(this).attr('data-uid') });
+		$('#eth-subsystem-toggle').click(function () {
+			socket.emit('ethnodes_subsystem', { enabled: !ETH_ENABLED });
 		});
 		$('#eth-reload').click(function () {
 			socket.emit('ethnodes_reload', {});

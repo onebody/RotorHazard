@@ -6,6 +6,7 @@
 
 import os
 import sys
+import time
 import unittest
 
 _TESTS_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -192,8 +193,9 @@ class RowTests(unittest.TestCase):
                         local_ports=[])
         row = out['rows'][0]
         self.assertEqual(row['binding'], 'missing')
-        self.assertIn('node_bridge.py --url', row['command'])
+        self.assertIn('bridge.py --to', row['command'])
         self.assertIn('node%3Awidscan58-52a1d8', row['command'])
+        self.assertIn("--link '/tmp/rh-widscan58-52a1d8'", row['command'])
 
     def test_bare_s3_has_no_net_status_and_does_not_crash(self):
         bare = {'port': '/dev/cu.usbmodemBARE', 'kind': 's3', 'mac': 'aa:bb',
@@ -301,6 +303,37 @@ class GatewayClientTests(unittest.TestCase):
                          'http://10.0.0.5:8011')
 
 
+class RelayOnlineTests(unittest.TestCase):
+    '''配网后的 online 判据：只认网关节点表里 online=true 的中继。'''
+
+    def online(self, nodes, mac=None):
+        from plugins.rh_usb_flash import gateway_client
+        return gateway_client.relay_online(nodes, mac)
+
+    def test_online_relay_matching_mac_last_six_hex(self):
+        nodes = [{'id': 'widscan58-52a1d8', 'kind': 'relay', 'online': True}]
+        self.assertTrue(self.online(nodes, '34:B7:DA:52:A1:D8'))
+
+    def test_offline_relay_is_not_online(self):
+        nodes = [{'id': 'widscan58-52a1d8', 'kind': 'relay', 'online': False}]
+        self.assertFalse(self.online(nodes, '34:B7:DA:52:A1:D8'))
+
+    def test_other_mac_online_relay_does_not_count(self):
+        nodes = [{'id': 'widscan58-00beef', 'kind': 'relay', 'online': True}]
+        self.assertFalse(self.online(nodes, '34:B7:DA:52:A1:D8'))
+
+    def test_missing_mac_falls_back_to_any_online_relay(self):
+        nodes = [{'id': 'widscan58-00beef', 'kind': 'relay', 'online': True}]
+        self.assertTrue(self.online(nodes, None))
+
+    def test_non_relay_and_dirty_entries_are_skipped(self):
+        nodes = [None, 'junk', {'id': 'endpoint-x', 'kind': 'serial',
+                                'online': True},
+                 {'id': 'widscan58-52a1d8', 'kind': 'relay', 'online': True}]
+        self.assertTrue(self.online(nodes, '34:B7:DA:52:A1:D8'))
+        self.assertFalse(self.online(nodes, '34:B7:DA:00:00:00'))
+
+
 TAG_REQ = {'usb_port': DEV['port'], 'node_port': '/dev/ttys009', 'label': 'relay-1'}
 RETARGET_REQ = {'usb_port': DEV['port'], 'host': '192.168.31.102', 'port_num': 8011}
 
@@ -350,6 +383,29 @@ class RelayEvents(unittest.TestCase):
         self.addCleanup(setattr, provision, 'provision_relay', orig)
         return calls
 
+    def patch_reconnect(self, result):
+        from plugins.rh_usb_flash import provision
+        calls = []
+        orig = provision.reconnect_relay
+
+        def fake(usb_port, **kw):
+            kw['usb_port'] = usb_port
+            calls.append(kw)
+            return dict(result)
+
+        provision.reconnect_relay = fake
+        self.addCleanup(setattr, provision, 'reconnect_relay', orig)
+        return calls
+
+    def wait_event(self, name, timeout=3.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for ev in reversed(self.client.get_received()):
+                if ev['name'] == name:
+                    return ev['args'][0]
+            time.sleep(0.02)
+        return None
+
     def last_event(self, name):
         for ev in reversed(self.client.get_received()):
             if ev['name'] == name:
@@ -375,6 +431,62 @@ class RelayEvents(unittest.TestCase):
             self.client.emit('relay_refresh', {})
             payload = self.last_event('relay_table')
         self.assertTrue(payload['busy'])
+
+    def test_reconnect_needs_a_usb_port(self):
+        self.client.emit('relay_reconnect', {})
+        payload = self.last_event('relay_reconnect_result')
+        self.assertFalse(payload['ok'])
+        self.assertIn('usb_port', payload['error'])
+
+    def test_reconnect_while_a_usb_job_runs_reports_busy(self):
+        with rh_usb_flash.USB_LOCK:
+            self.client.emit('relay_reconnect', {'usb_port': DEV['port']})
+            payload = self.last_event('relay_reconnect_result')
+        self.assertFalse(payload['ok'])
+        self.assertEqual('busy', payload['error'])
+
+    def test_reconnect_is_refused_during_a_race(self):
+        calls = self.patch_reconnect({'ok': True, 'online': True})
+        self.set_race(RaceStatus.RACING)
+        self.client.emit('relay_reconnect', {'usb_port': DEV['port']})
+        payload = self.last_event('relay_reconnect_result')
+        self.assertFalse(payload['ok'])
+        self.assertTrue(payload['refused'])
+        self.assertEqual(calls, [], '重连会断链路，比赛中不许做')
+
+    def test_reconnect_runs_off_on_for_a_relay(self):
+        self.patch_probe(DEV)
+        calls = self.patch_reconnect({'ok': True, 'online': True})
+        self.client.emit('relay_reconnect', {'usb_port': DEV['port'],
+                                             'ssid': '  MyAP  ',
+                                             'password': 'secret'})
+        payload = self.wait_event('relay_reconnect_result')
+        self.assertIsNotNone(payload)
+        self.assertTrue(payload['ok'])
+        self.assertTrue(payload['online'])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['usb_port'], DEV['port'])
+        self.assertEqual(calls[0]['ssid'], 'MyAP')
+        self.assertEqual(calls[0]['password'], 'secret')
+        self.assertNotIn('secret', str(payload), '结果里不许回传密码')
+
+    def test_reconnect_without_credentials_keeps_saved_ones(self):
+        self.patch_probe(DEV)
+        calls = self.patch_reconnect({'ok': True})
+        self.client.emit('relay_reconnect', {'usb_port': DEV['port']})
+        self.wait_event('relay_reconnect_result')
+        self.assertEqual(calls[0]['usb_port'], DEV['port'])
+        self.assertIsNone(calls[0]['ssid'])
+        self.assertIsNone(calls[0]['password'])
+
+    def test_reconnect_refuses_a_port_that_is_not_a_relay(self):
+        self.patch_probe({'port': DEV['port'], 'kind': 'c5', 'mac': None})
+        calls = self.patch_reconnect({'ok': True})
+        self.client.emit('relay_reconnect', {'usb_port': DEV['port']})
+        payload = self.wait_event('relay_reconnect_result')
+        self.assertFalse(payload['ok'])
+        self.assertIn('relay', payload['error'])
+        self.assertEqual(calls, [])
 
     def test_tag_merges_instead_of_replacing_the_whole_table(self):
         cfg = server.RaceContext.serverconfig
@@ -497,10 +609,12 @@ class InjectionGuards(unittest.TestCase):
         for event, payload in (('relay_refresh', {}),
                                ('relay_tag', TAG_REQ),
                                ('relay_unbind', {'node_port': '/dev/ttys009'}),
+                               ('relay_reconnect', {'usb_port': DEV['port']}),
                                ('relay_retarget', RETARGET_REQ)):
             self.client.emit(event, payload)
         names = [ev['name'] for ev in self.client.get_received()]
-        for name in ('relay_table', 'relay_result', 'relay_retarget_result'):
+        for name in ('relay_table', 'relay_result',
+                     'relay_reconnect_result', 'relay_retarget_result'):
             self.assertNotIn(name, names)
 
 

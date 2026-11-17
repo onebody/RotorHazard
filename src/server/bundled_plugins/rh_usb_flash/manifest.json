@@ -1,0 +1,9 @@
+{
+    "domain": "rh_usb_flash",
+    "name": "RH-ENE USB Flash & Provision",
+    "author": "onebody",
+    "description": "USB 设备下拉、C5/S3 固件刷写与 S3 中继直接配网（RH-ENE 增量4，插件形态）",
+    "documentation_uri": null,
+    "version": "1.0.0",
+    "required_rhapi_version": "1.0"
+}

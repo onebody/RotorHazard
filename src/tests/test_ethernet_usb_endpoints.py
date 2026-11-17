@@ -77,9 +77,14 @@ class UsbEndpoints(unittest.TestCase):
                     'provisionable': True}]
         self.patch_enum(devices)
         self.client.emit('usb_list', {})
-        payload = self.last_event('usb_devices')
+        received = self.client.get_received()
+        names = [ev['name'] for ev in received]
+        payload = next((ev['args'][0] for ev in received
+                        if ev['name'] == 'usb_devices'), None)
         self.assertIsNotNone(payload)
         self.assertEqual(devices, payload['devices'])
+        # 中继表复用同一次枚举随包广播：首屏不再单独 relay_refresh 撞锁。
+        self.assertIn('relay_table', names)
 
     def test_usb_list_requires_auth(self):
         import AdminAuth
@@ -225,6 +230,69 @@ class UsbEndpoints(unittest.TestCase):
         self.assertEqual('192.168.8.77', payload['injected_ip'])
         self.assertEqual([('/dev/cu.fake', 'esp32c5-eth', '192.168.8.77')],
                          calls)
+
+    def test_provision_wireless_online_comes_from_gateway_nodes(self):
+        '''无线配网 online 判据：网关 /api/nodes 里有这台中继（MAC 后 6 位对 id）。
+
+        中继连的是网关而非本机 RH 的 ETHNODE 接口，判据读错源就会永远
+        「Relay not seen online yet」——本用例钉住数据源。
+        '''
+        from plugins.rh_usb_flash import gateway_client, provision
+        orig_probe = usb_ops.probe_one
+        orig_prov = provision.provision_relay
+        orig_fetch = gateway_client.fetch_nodes
+        seen = {}
+
+        def fake_prov(port, host, port_num, **kw):
+            seen['online'] = kw['gateway_nodes'](
+                'ws://{}:{}/node'.format(host, port_num))
+            return {'ok': True, 'online': seen['online'], 'error': None}
+
+        usb_ops.probe_one = lambda port: {'port': port, 'kind': 'relay',
+                                          'mac': '34:B7:DA:52:A1:D8'}
+        provision.provision_relay = fake_prov
+        gateway_client.fetch_nodes = lambda base, **kw: {
+            'ok': True, 'error': None,
+            'nodes': [{'id': 'widscan58-52a1d8', 'kind': 'relay',
+                       'online': True}]}
+        self.addCleanup(setattr, usb_ops, 'probe_one', orig_probe)
+        self.addCleanup(setattr, provision, 'provision_relay', orig_prov)
+        self.addCleanup(setattr, gateway_client, 'fetch_nodes', orig_fetch)
+        self.set_settings(GATEWAY_HOST='192.168.8.156', GATEWAY_PORT='8011')
+
+        self.client.emit('usb_provision', {'port': '/dev/cu.fake'})
+        payload = self.wait_event('usb_provision_result')
+        self.assertTrue(payload['online'])
+        self.assertEqual('wireless', payload['mode'])
+
+    def test_provision_wireless_reports_offline_for_another_relay(self):
+        '''网关上有别的中继在线，不等于这台配好了。'''
+        from plugins.rh_usb_flash import gateway_client, provision
+        orig_probe = usb_ops.probe_one
+        orig_prov = provision.provision_relay
+        orig_fetch = gateway_client.fetch_nodes
+
+        def fake_prov(port, host, port_num, **kw):
+            return {'ok': True,
+                    'online': kw['gateway_nodes']('ws://{}:{}/node'.format(
+                        host, port_num)),
+                    'error': None}
+
+        usb_ops.probe_one = lambda port: {'port': port, 'kind': 'relay',
+                                          'mac': '34:B7:DA:52:A1:D8'}
+        provision.provision_relay = fake_prov
+        gateway_client.fetch_nodes = lambda base, **kw: {
+            'ok': True, 'error': None,
+            'nodes': [{'id': 'widscan58-00beef', 'kind': 'relay',
+                       'online': True}]}
+        self.addCleanup(setattr, usb_ops, 'probe_one', orig_probe)
+        self.addCleanup(setattr, provision, 'provision_relay', orig_prov)
+        self.addCleanup(setattr, gateway_client, 'fetch_nodes', orig_fetch)
+        self.set_settings(GATEWAY_HOST='192.168.8.156', GATEWAY_PORT='8011')
+
+        self.client.emit('usb_provision', {'port': '/dev/cu.fake'})
+        payload = self.wait_event('usb_provision_result')
+        self.assertFalse(payload['online'])
 
     def test_second_initialize_does_not_re_register(self):
         '''reload/重装路径会再调一次 initialize；同名端点二次注册会抛错。'''

@@ -1,6 +1,6 @@
 '''RH-ENE 增量2：本地串口原生计时节点的只读显示（local_node_status）。
 
-无线 C5 经 rftrack→node_bridge→PTY 走串口原生路径（InterfaceType.RH），不在
+无线 C5 经 rftrack→bridge.py→PTY 走串口原生路径（InterfaceType.RH），不在
 ENP-W 的 ETHNODE 观测面里。本测试覆盖：按物理端口归组、配置标签（有线/无线）、
 未标注默认、已识别判据、空/无 RH 接口、以及 LOCAL_NODES 节注册不被 clean_config 抹掉。
 
@@ -133,6 +133,36 @@ class Identification(LocalNodeHarness):
         self.assertEqual(35, device['api_level'])
         self.assertTrue(device['identified'])
         self.assertEqual('1.0.0', device['firmware_version'])
+
+
+class ConfiguredPorts(LocalNodeHarness):
+    '''单一启用要能「停用后再启用」：停用的口不能从列表里消失。'''
+
+    def test_no_mapper_still_lists_configured_ports(self):
+        self.config.set_item('GENERAL', 'SERIAL_PORTS', [PORT_A])
+        devices = local_node_status(None, self.config)
+        self.assertEqual([PORT_A], [d['port'] for d in devices])
+
+    def test_configured_port_without_a_node_is_enabled_but_not_present(self):
+        self.config.set_item('GENERAL', 'SERIAL_PORTS', [PORT_A])
+        device = local_node_status(mapper_of([]), self.config)[0]
+        self.assertTrue(device['enabled'])
+        self.assertFalse(device['present'])
+        self.assertEqual(0, device['seats'])
+
+    def test_remembered_port_stays_listed_but_disabled(self):
+        self.config.set_item('LOCAL_NODES', 'PORTS', [PORT_B])
+        device = local_node_status(mapper_of([]), self.config)[0]
+        self.assertEqual(PORT_B, device['port'])
+        self.assertFalse(device['enabled'])
+        self.assertFalse(device['present'])
+
+    def test_live_port_is_enabled_only_when_the_scan_list_has_it(self):
+        self.config.set_item('GENERAL', 'SERIAL_PORTS', [PORT_A])
+        device = local_node_status(mapper_of([serial_node(0, PORT_A)]),
+                                   self.config)[0]
+        self.assertTrue(device['enabled'])
+        self.assertTrue(device['present'])
 
 
 class ConfigRegistration(LocalNodeHarness):

@@ -1,0 +1,474 @@
+{% extends "layout.html" %} {% block title %}{{ __('USB devices') }} / {{ __('Ethernet Nodes') }}{% endblock %} {% block content %}
+<main class="page-settings">
+<h2>{{ __('USB devices') }} / {{ __('Ethernet Nodes') }}</h2>
+
+<h3>{{ __('USB devices') }}</h3>
+<p>{{ __('Select USB devices to flash firmware or provision a relay in one step. Flashing always asks for confirmation first.') }}</p>
+
+<div class="control-set">
+	<b>{{ __('USB devices') }}:</b>
+	<select id="usb-select"><option value="">{{ __('Select a USB device') }}</option></select>
+	&nbsp; <button id="usb-refresh">{{ __('Re-enumerate') }}</button>
+	<button id="usb-check">{{ __('Check firmware') }}</button>
+	<span id="usb-flash-note" class="priority-message"></span>
+</div>
+
+<div class="control-set" id="usb-detail" style="display:none">
+	<div id="usb-detail-text"></div>
+	<div id="usb-check-text" class="priority-message"></div>
+	<div style="margin-top:0.4em">
+		<label>{{ __('Target firmware') }}:
+			<select id="usb-target-env">
+				{% for env in usb_environments %}<option value="{{ env.name }}" data-target="{{ env.target or '' }}">{{ env.name }} — {{ env.desc }}</option>
+				{% endfor %}
+			</select>
+		</label>
+		<span id="usb-env-note" class="priority-message"></span>
+	</div>
+	<div style="margin-top:0.4em">
+		<label>{{ __('Wireless gateway') }}:
+			<input id="usb-gw-host" size="16" value="{{ usb_settings.gateway.host or '' }}" placeholder="{{ __('gateway host') }}">
+		</label>
+		<input id="usb-gw-port" size="6" value="{{ usb_settings.gateway.port or 8011 }}">
+		&nbsp;
+		<label>{{ __('Wired IP (empty = auto)') }}:
+			<input id="usb-wired-ip" size="16" value="" placeholder="{{ __('auto') }}">
+		</label>
+	</div>
+	<div style="margin-top:0.4em">
+		<button id="usb-do-flash">{{ __('Flash firmware') }}</button>
+		<button id="usb-do-provision">{{ __('Provision network') }}</button>
+		<button id="usb-do-test">{{ __('Test device') }}</button>
+	</div>
+	<p style="font-size:0.9em;opacity:0.8">{{ __('Wireless provisioning sends the gateway address to a relay. Wired provisioning rebuilds the firmware with that IP and flashes it.') }}</p>
+</div>
+
+<div class="control-set" id="relay-table">
+	<h4>{{ __('Relays (wireless)') }}</h4>
+	<div id="relay-note" class="priority-message"></div>
+	<table style="width:100%">
+		<thead>
+			<tr>
+				<th>{{ __('Device') }}</th><th>{{ __('Points to') }}</th>
+				<th>{{ __('Gateway') }}</th><th>{{ __('RH port') }}</th>
+				<th>{{ __('State') }}</th><th></th>
+			</tr>
+		</thead>
+		<tbody id="relay-rows"></tbody>
+	</table>
+	<div id="relay-others" style="font-size:0.9em;opacity:0.8"></div>
+	<div class="control-set">
+		<button id="relay-refresh">{{ __('Refresh relays') }}</button>
+		<select id="relay-port-select">
+			<option value="">{{ __('Select an RH serial port') }}</option>
+			{% for p in relay_ports %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+		</select>
+	</div>
+</div>
+
+<div class="control-set">
+	<b>{{ __('Operation log') }}:</b>
+	<div id="usb-log" style="max-height:20em;overflow-y:auto;font-family:monospace;font-size:0.9em"></div>
+</div>
+
+{# 设置页的插件面板已删：配置项搬到本页，保存后写入 USB_FLASH 段。 #}
+<details class="control-set" id="usb-settings">
+	<summary>{{ __('Advanced settings') }}</summary>
+	<div><label>{{ __('PlatformIO executable') }}: <input id="usb-set-pio" size="48" value="{{ usb_settings.pio_path }}"></label></div>
+	<div><label>{{ __('Firmware project directory') }}: <input id="usb-set-project" size="48" value="{{ usb_settings.project }}"></label></div>
+	<div><label>{{ __('Firmware build cache') }}: <input id="usb-set-cache" size="48" value="{{ usb_settings.cache_dir }}"></label></div>
+	<div>
+		<label>{{ __('Gateway host') }}: <input id="usb-set-gw-host" size="20" value="{{ usb_settings.gateway.host or '' }}"></label>
+		<label>{{ __('Gateway port') }}: <input id="usb-set-gw-port" size="6" value="{{ usb_settings.gateway.port or '' }}"></label>
+	</div>
+	<button id="usb-save-settings">{{ __('Save settings') }}</button>
+	<span id="usb-settings-note" class="priority-message"></span>
+</details>
+
+<h3>{{ __('Ethernet Nodes') }}</h3>
+{# 合并页：以太网节点区块原为 settings 面板与 /ethnodes 独立页共用，现统一并入本页。 #}
+{% include 'ethnodes_panel.html' %}
+
+<script type="text/javascript" charset="utf-8">
+	$(document).ready(function () {
+		// 插件页面：所有来自网络播报的字段（port/version/error）一律 .text() 注入，杜绝 XSS。
+		// 一次只发一个串口任务（服务端互斥），任务进行中按钮统一禁用。
+		var usbBusy = false;
+		var usbListPending = false;
+		var usbListRetry = 0;
+		var usbSelected = null;
+		var usbDeviceTarget = null;
+
+		function usb_kind_label(k) {
+			return {
+				relay: __('S3 relay'),
+				s3: __('S3 (not provisioned)'),
+				eth: __('C5 wired'),
+				c5: __('C5 (scanning)'),
+				unknown: __('Unrecognized')
+			}[k] || k;
+		}
+
+		function usb_log(text) {
+			$('#usb-log').prepend($('<div>').text(
+				new Date().toLocaleTimeString() + '  ' + text));
+		}
+
+		function usb_set_busy(flag) {
+			usbBusy = flag;
+			$('#usb-refresh, #usb-check, #usb-do-flash, #usb-do-provision, ' +
+				'#usb-do-test').prop('disabled', flag);
+		}
+
+		// 设备 target 与所选 env 的 target 不同 = 选了别家的固件（服务端不拦，
+		// 界面明确提示；刷写前还有确认框）。
+		function usb_env_note() {
+			var target = $('#usb-target-env').find(':selected').attr('data-target') || '';
+			var bad = !!(usbDeviceTarget && target && target !== usbDeviceTarget);
+			$('#usb-env-note').text(bad
+				? __('Firmware type does not match the device') : '');
+			return !bad;
+		}
+
+		function usb_check_map() {
+			return {
+				current: __('Firmware is up to date'),
+				outdated: __('Firmware is outdated'),
+				'no-pio': __('PIO not found (USB_FLASH/PIO_PATH)'),
+				'no-project': __('Firmware project not configured (USB_FLASH/PROJECT_DIR)'),
+				unknown: __('Firmware check unavailable')
+			};
+		}
+
+		function render_usb_check(d) {
+			var c = d.check || {};
+			var text = usb_check_map()[c.verdict] || c.verdict || '';
+			var extra = [];
+			if (c.device_commit || (c.project && c.project.commit)) {
+				extra.push('device ' + (c.device_commit || '—') +
+					' / project ' + ((c.project && c.project.commit) || '—'));
+			}
+			if (c.project && c.project.dirty) { extra.push(__('project has uncommitted changes')); }
+			if (c.error) { extra.push(c.error); }
+			$('#usb-check-text').text(text + (extra.length ? ' (' + extra.join(', ') + ')' : ''));
+			if (c.expected_env) { $('#usb-target-env').val(c.expected_env); }
+			usb_env_note();
+		}
+
+		function apply_settings(s) {
+			if (!s) { return; }
+			$('#usb-set-pio').val(s.pio_path || '');
+			$('#usb-set-project').val(s.project || '');
+			$('#usb-set-cache').val(s.cache_dir || '');
+			var gw = s.gateway || {};
+			$('#usb-set-gw-host').val(gw.host || '');
+			$('#usb-set-gw-port').val(gw.port || '');
+			if (!$('#usb-gw-host').val()) { $('#usb-gw-host').val(gw.host || ''); }
+			if (gw.port) { $('#usb-gw-port').val(gw.port); }
+		}
+
+		function request_usb_list() {
+			// language 与 connect 各来一发时只发一次：一次枚举要占串口锁约 5 秒，
+			// 重复请求只会让后到的那次回 busy，按钮跟着被关掉。
+			if (usbListPending) { return; }
+			usbListPending = true;
+			socket.emit('usb_list', {});
+		}
+
+		function render_usb_devices(payload) {
+			usbListPending = false;
+			// 刷新页面时，上一页发起的枚举还在服务端占着串口锁：不重试用就会停在
+			// 空表上（看起来像「刷新失败」）。等它结束再自动拉，最多 8 次 ≈ 12 秒。
+			if (payload.busy) {
+				if (usbListRetry < 8) {
+					usbListRetry += 1;
+					usb_log(__('Waiting for the running USB job to finish') +
+						' (' + usbListRetry + ')');
+					setTimeout(request_usb_list, 1500);
+				} else {
+					usb_log(__('A USB job is running'));
+				}
+				return;
+			}
+			usbListRetry = 0;
+			var $sel = $('#usb-select').empty();
+			$sel.append($('<option>').attr('value', '').text(__('Select a USB device')));
+			var devices = payload.devices || [];
+			devices.forEach(function (d) {
+				var summary = d.version || d.info_raw || d.error || '';
+				$sel.append($('<option>').attr('value', d.port).text(
+					d.port + ' · ' + usb_kind_label(d.kind) +
+					(summary ? ' · ' + summary : '')));
+			});
+			if (!devices.length) {
+				$sel.append($('<option>').attr('value', '').text(__('No USB devices on this host')));
+			}
+			if (usbSelected && devices.some(function (d) { return d.port === usbSelected; })) {
+				$sel.val(usbSelected);
+			}
+			// 刷写能力降级：PIO 或固件工程缺失时禁用并显示原因。
+			var flash = payload.flash || {};
+			var note = '';
+			if (!flash.pio) { note = __('PIO not found (USB_FLASH/PIO_PATH)'); }
+			else if (!flash.project) { note = __('Firmware project not configured (USB_FLASH/PROJECT_DIR)'); }
+			$('#usb-flash-note').text(
+				note ? __('Flashing disabled on this host') + ': ' + note : '');
+			$('#usb-do-flash').prop('disabled', !!note || usbBusy);
+			apply_settings(payload.settings);
+		}
+
+		function render_usb_detail(d) {
+			var $box = $('#usb-detail');
+			if (!d.port || d.port !== usbSelected) { return; }
+			$box.show();
+			usbDeviceTarget = d.target || null;
+			var lines = [usb_kind_label(d.kind) + ' · ' + (d.mac || '—') +
+				' · ' + (d.version || '—') + ' · ' +
+				__('Uptime') + ' ' + (d.uptime_ms === null ? '—' : d.uptime_ms + 'ms')];
+			if (d.kind === 'relay' && d.net_status) {
+				// 选中即读回板上现状：当前 SSID 与是否真的连上（有 ip4 才算连上）。
+				var net = d.net_status;
+				var ip4 = (net.ip4 && net.ip4 !== 'none') ? net.ip4 : null;
+				var joined = !!ip4 && (net.sta === 3 || net.sta === true);
+				lines.push(__('WiFi SSID') + ': ' + (net.ssid || '—') + ' · ' +
+					(joined ? __('WiFi connected') : __('WiFi not connected')));
+				lines.push(__('Uplink') + ': ' + (net.url || '—') + ' · ' +
+					(ip4 || '—'));
+			}
+			if (d.kind === 'eth' || d.kind === 'c5') {
+				lines.push(__('Build-time IP') + ': ' + (d.cached_ip || '—'));
+			}
+			if (d.error) { lines.push(d.error); }
+			$('#usb-detail-text').text(lines.join('\n'));
+			if (d.flash_default) { $('#usb-target-env').val(d.flash_default); }
+			render_usb_check(d);
+			// 配网：中继走无线、C5 走有线（固件 target=esp32c5 的两种形态都可）。
+			$('#usb-do-provision').prop('disabled',
+				['relay', 'eth', 'c5'].indexOf(d.kind) < 0 || usbBusy);
+			var flash = d.flash || {};
+			$('#usb-do-flash').prop('disabled',
+				(!flash.pio || !flash.project) || usbBusy);
+		}
+
+		socket.on('usb_devices', render_usb_devices);
+		socket.on('usb_device_detail', render_usb_detail);
+		socket.on('usb_flash_result', function (r) {
+			usb_set_busy(false);
+			usb_log(__('Flash firmware') + ' [' + (r.env || '?') + ' → ' + (r.port || '?') + ']: ' +
+				(r.ok ? (r.fresh ? 'OK' : __('Uptime') + ' not fresh') : (r.error || 'fail')));
+		});
+		socket.on('usb_provision_result', function (r) {
+			usb_set_busy(false);
+			var mode = r.mode === 'wired' ? __('Wired') : __('Wireless');
+			var detail;
+			if (!r.ok) {
+				detail = r.error || 'fail';
+			} else if (r.mode === 'wired') {
+				detail = __('Flashed with IP') + ' ' + (r.injected_ip || '?') +
+					(r.fresh ? '' : ' · ' + __('Uptime') + ' not fresh');
+			} else {
+				detail = r.online ? __('Relay online') : __('Relay not seen online yet');
+			}
+			usb_log(__('Provision network') + ' [' + mode + ' ' + (r.port || '?') + ']: ' + detail);
+		});
+		socket.on('usb_settings_result', function (r) {
+			$('#usb-settings-note').text(r.ok
+				? __('Settings saved')
+				: (r.error || __('Settings save failed')));
+			apply_settings(r.settings);
+			request_usb_list();
+		});
+		socket.on('usb_test_result', function (r) {
+			usb_set_busy(false);
+			var d = r.device || {};
+			usb_log(__('Test device') + ' [' + (r.port || '?') + ']: ' +
+				(r.ok ? usb_kind_label(d.kind) + ' · ' + (d.version || '') : (r.error || d.error || 'fail')));
+		});
+
+		$('#usb-refresh').click(function () {
+			request_usb_list();
+		});
+		$('#usb-check').click(function () {
+			if (usbSelected && !usbBusy) {
+				socket.emit('usb_probe_dev', { port: usbSelected });
+			}
+		});
+		$('#usb-target-env').change(function () { usb_env_note(); });
+		$('#usb-select').change(function () {
+			usbSelected = $(this).val();
+			usbDeviceTarget = null;
+			$('#usb-check-text, #usb-env-note').text('');
+			if (usbSelected) {
+				usb_set_busy(false);
+				socket.emit('usb_probe_dev', { port: usbSelected });
+			} else {
+				$('#usb-detail').hide();
+			}
+		});
+		$('#usb-do-flash').click(function () {
+			if (!usbSelected || usbBusy) { return; }
+			var env = $('#usb-target-env').val();
+			var extra = usb_env_note() ? '' : '\n' + __('Firmware type does not match the device');
+			if (!window.confirm(__('Confirm flash') + ': ' + env + ' → ' + usbSelected + '?' + extra)) { return; }
+			usb_set_busy(true);
+			socket.emit('usb_flash', { port: usbSelected, env: env });
+		});
+		$('#usb-do-provision').click(function () {
+			if (!usbSelected || usbBusy) { return; }
+			usb_set_busy(true);
+			socket.emit('usb_provision', {
+				port: usbSelected,
+				host: $('#usb-gw-host').val(),
+				port_num: $('#usb-gw-port').val(),
+				wired_ip: $('#usb-wired-ip').val()
+			});
+		});
+		$('#usb-do-test').click(function () {
+			if (!usbSelected || usbBusy) { return; }
+			usb_set_busy(true);
+			socket.emit('usb_test', { port: usbSelected });
+		});
+		$('#usb-save-settings').click(function () {
+			socket.emit('usb_save_settings', {
+				pio_path: $('#usb-set-pio').val(),
+				project: $('#usb-set-project').val(),
+				cache_dir: $('#usb-set-cache').val(),
+				gateway_host: $('#usb-set-gw-host').val(),
+				gateway_port: $('#usb-set-gw-port').val()
+			});
+		});
+
+		function relay_state_text(row) {
+			var map = {
+				ok: '{{ __("Bound") }}',
+				offsite: '{{ __("Wrong gateway") }}',
+				unbound: '{{ __("Not bound to an RH port") }}',
+				missing: '{{ __("Bound, but the RH port is absent") }}'
+			};
+			return map[row.binding] || row.binding;
+		}
+
+		function relay_row_html(row) {
+			var cells = [];
+			cells.push($('<td>').text((row.description || row.port) + ' ' + (row.mac || '')));
+			cells.push($('<td>').text((row.net_status && row.net_status.url) || '—'));
+			cells.push($('<td>').text(row.gateway.known
+				? ((row.gateway.id || '?') + (row.gateway.online ? ' online' : ' offline'))
+				: '{{ __("unknown") }}'));
+			cells.push($('<td>').text(row.bound_port || '—'));
+			cells.push($('<td>').text(relay_state_text(row)));
+			var actions = $('<td>');
+			if (row.binding === 'unbound') {
+				actions.append($('<button>').text('{{ __("Bind") }}').click(function () {
+					var port = $('#relay-port-select').val();
+					if (!port) { usb_log('{{ __("Pick an RH serial port first") }}'); return; }
+					socket.emit('relay_tag', { usb_port: row.port, node_port: port,
+						label: row.description || row.port });
+				}));
+			}
+			if (row.binding === 'offsite' || row.binding === 'missing') {
+				actions.append($('<button>').text('{{ __("Retarget") }}').click(function () {
+					socket.emit('relay_retarget', { usb_port: row.port });
+				}));
+			}
+			if (row.binding === 'ok' || row.binding === 'missing') {
+				actions.append($('<button>').text('{{ __("Unbind") }}').click(function () {
+					socket.emit('relay_unbind', { node_port: row.bound_port });
+				}));
+			}
+			// 重连：可留空沿用板上已存凭据；填了 SSID 就先 NET SSID/PASS/SAVE 再重连。
+			var reconnect = $('<div>').css({ display: 'none', 'margin-top': '4px' });
+			var ssidInput = $('<input>').attr({ type: 'text', size: 12,
+				placeholder: '{{ __("SSID (leave blank to keep the saved one)") }}' });
+			var passInput = $('<input>').attr({ type: 'password', size: 12,
+				placeholder: '{{ __("Password (leave blank to keep the saved one)") }}' });
+			reconnect.append(ssidInput, ' ', passInput, ' ',
+				$('<button>').text('{{ __("Reconnect") }}').click(function () {
+					$(this).prop('disabled', true);
+					var ssid = $.trim(ssidInput.val());
+					// 密码绝不进日志。
+					usb_log('{{ __("Reconnect WiFi") }}: ' + (row.mac || row.port)
+						+ (ssid ? ' · ' + ssid : ''));
+					socket.emit('relay_reconnect', {
+						usb_port: row.port, ssid: ssid, password: passInput.val()
+					});
+					passInput.val('');
+				}),
+				$('<button>').text('{{ __("Cancel") }}').click(function () {
+					reconnect.hide();
+				}));
+			actions.append($('<button>').text('{{ __("Reconnect WiFi") }}').click(function () {
+				if (reconnect.is(':visible')) { reconnect.hide(); } else { reconnect.show(); }
+			}));
+			actions.append(reconnect);
+			if (row.command) {
+				actions.append($('<div>').css('font-size', '0.85em')
+					.text('{{ __("Run this to bring the port up") }}: ' + row.command));
+			}
+			cells.push(actions);
+			return $('<tr>').append(cells);
+		}
+
+		function render_relay_table(payload) {
+			// busy 时先别清表：清空再 return 会让表格闪成空白（Spec §3.5 要的是「其余按钮 disabled」）。
+			if (payload.busy) {
+				$('#relay-table').find('button').prop('disabled', true);
+				usb_log('{{ __("A USB job is running") }}');
+				return;
+			}
+			var body = $('#relay-rows').empty();
+			(payload.rows || []).forEach(function (row) { body.append(relay_row_html(row)); });
+			var others = $('#relay-others').empty();
+			(payload.others || []).forEach(function (row) {
+				others.append($('<div>').text(
+					(row.port || '?') + ' — ' + (row.kind || '?') + ' — ' +
+					(row.info_raw || row.error || '')));
+			});
+			var gw = payload.gateway || {};
+			$('#relay-note').text(gw.host ? ('{{ __("Gateway") }}: ' + gw.host + ':' + gw.port)
+				: '{{ __("Gateway not configured (USB_FLASH/GATEWAY_HOST, GATEWAY_PORT)") }}');
+		}
+
+		socket.on('relay_table', render_relay_table);
+		socket.on('relay_result', function (r) {
+			usb_log('relay ' + r.action + ': ' + (r.ok ? 'OK' : (r.error || 'failed')));
+			socket.emit('relay_refresh', {});
+		});
+		socket.on('relay_retarget_result', function (r) {
+			usb_log('relay retarget: ' + (r.ok ? 'OK' : (r.error || 'failed')));
+			socket.emit('relay_refresh', {});
+		});
+		socket.on('relay_reconnect_result', function (r) {
+			var text;
+			if (!r.ok) {
+				text = r.error || 'failed';
+			} else if (r.online) {
+				text = '{{ __("Relay online") }}';
+			} else if (r.wifi) {
+				text = '{{ __("WiFi connected") }}' + (r.ip4 ? ' · ' + r.ip4 : '')
+					+ ' · {{ __("Relay not seen online yet") }}';
+			} else {
+				text = '{{ __("WiFi not connected") }}';
+			}
+			usb_log('{{ __("Reconnect WiFi") }}: ' + text + (r.url ? ' · ' + r.url : ''));
+			socket.emit('relay_refresh', {});
+		});
+		$('#relay-refresh').click(function () { socket.emit('relay_refresh', {}); });
+
+		// 自足：连接建立即拉语言与设备列表；language 到达后再拉一次，避免首帧
+		// 抢在语言之前到达时动态文案回退成英文。
+		function request_language() { socket.emit('load_data', { load_types: ['language', 'all_languages'] }); }
+		socket.on('language', function (msg) {
+			if (msg && typeof msg.language !== 'undefined') { rotorhazard.interface_language = msg.language; }
+			request_usb_list();
+		});
+		// all_languages 紧跟着 language 到，这里不再重复枚举：一次 usb_list 要占
+		// 串口锁约 5 秒，多发一次会让首屏按钮在这段时间里都回 busy。
+		// 中继表由服务端在 usb_list 回包里顺带广播（复用同一次枚举），
+		// 页面不再单独发 relay_refresh 去撞锁。
+		socket.on('connect', function () { request_language(); request_usb_list(); });
+		if (socket.connected) { request_language(); request_usb_list(); }
+	});
+</script>
+</main>
+{% endblock %}

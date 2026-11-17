@@ -39,3 +39,23 @@ def fetch_nodes(base_url, opener=None, timeout=DEFAULT_TIMEOUT):
     if not isinstance(nodes, list):
         return {'ok': False, 'nodes': [], 'error': 'unexpected payload'}
     return {'ok': True, 'nodes': nodes, 'error': None}
+
+
+def relay_online(nodes, mac=None):
+    '''配网后的在线判据：网关节点表里有 online=true 的中继。
+
+    给了 mac 就只认 MAC 后 6 位出现在 node id 里的那台（网关 id 形如
+    widscan58-52a1d8，末 6 位就是 MAC 末 6 位）；mac 缺失时退回「任一在线中继」。
+    '''
+    key = (mac or '').replace(':', '').replace('-', '').lower()[-6:]
+    for node in nodes or []:
+        if not isinstance(node, dict) or not node.get('online'):
+            continue
+        if node.get('kind') not in (None, 'relay'):
+            continue
+        if key:
+            if key in str(node.get('id') or '').lower():
+                return True
+            continue
+        return True
+    return False

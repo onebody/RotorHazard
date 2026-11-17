@@ -9,9 +9,12 @@
 
 import random
 
-from EthernetInterface import EthernetInterface
+from EthernetInterface import API_LEVEL, EthernetInterface
 from ethernet_nodes.node_registry import NodeRegistry
 from ethernet_nodes.local_nodes import local_node_status
+
+# 面板统一节点表要显示网络节点的 API 等级（与串口的 api_level 同列比较）。
+NODE_API_LEVEL = API_LEVEL
 
 # SPEC §3.3：server_session_id 每个服务器进程随机一次，跨接口重载保持不变——
 # 节点据它区分「服务器重启过」与「只是重载了接口」。故取模块级常量，不在工厂里现算。

@@ -45,6 +45,9 @@ class EthernetUI(unittest.TestCase):
         # ENABLED/NODES 泄漏进来（与 SECRETS 同款直接赋值，不落盘）。
         server.RaceContext.serverconfig.config['ETHERNET_NODES']['ENABLED'] = False
         server.RaceContext.serverconfig.config['ETHERNET_NODES']['NODES'] = []
+        # 单一启用会改写串口扫描清单与「记住的口」，同样要在用例间复位。
+        server.RaceContext.serverconfig.config['GENERAL']['SERIAL_PORTS'] = []
+        server.RaceContext.serverconfig.config['LOCAL_NODES']['PORTS'] = []
         self.registry = NodeRegistry(server.RaceContext.serverconfig)
 
     def tearDown(self):
@@ -104,6 +107,73 @@ class EthernetUI(unittest.TestCase):
         self.assertIsInstance(status['local_nodes'], list)
         for key in ('enabled', 'ready', 'candidates', 'nodes', 'stats'):
             self.assertIn(key, status)
+
+    def test_status_reports_one_table_with_the_single_active_key(self):
+        '''面板只画一张表：串口口 + 以太网节点同列，启用项由 active 标出。'''
+        self.ready()
+        server._set_active_node('serial:/dev/rh-test')
+        self.client.emit('load_ethnodes', {})
+        status = self.get_response('ethnodes_status')
+        self.assertTrue(status['subsystem']['enabled'])
+        self.assertIn(status['uplink']['state'], ('ready', 'failed'))
+        self.assertEqual(['serial:/dev/rh-test'], status['active'])
+        rows = {row['key']: row for row in status['nodes_all']}
+        self.assertTrue(rows['serial:/dev/rh-test']['enabled'])
+        self.assertFalse(rows['serial:/dev/rh-test']['present'])  # 配置里有，机器上没有
+
+    #
+    # 单一启用（串口口 / 以太网节点二选一）
+    #
+
+    def test_activating_an_ethernet_node_keeps_only_one_enabled(self):
+        self.ready()
+        self.assertTrue(server._set_active_node('eth:' + UID, 2))
+        self.assertEqual((UID,), self.registry.whitelist)
+        self.assertEqual([], server.RaceContext.serverconfig.get_item('GENERAL', 'SERIAL_PORTS'))
+        self.client.emit('load_ethnodes', {})
+        status = self.get_response('ethnodes_status')
+        self.assertEqual(['eth:' + UID], status['active'])
+        row = status['nodes_all'][0]
+        self.assertEqual('eth', row['kind'])
+        # 测试夹具先挂了 8 个 mock 座位，ETHNODE 的 1 号座位=绝对第 9 座。
+        self.assertEqual(9, row['first_seat'])
+        self.assertTrue(row['enabled'])
+
+    def test_activating_a_serial_node_disables_ethernet_and_remembers_the_port(self):
+        self.ready()
+        server._set_active_node('eth:' + UID, 2)
+        self.assertTrue(server._set_active_node('serial:/dev/rh-test'))
+        self.assertEqual((), self.registry.whitelist)
+        self.assertEqual(['/dev/rh-test'],
+                         server.RaceContext.serverconfig.get_item('GENERAL', 'SERIAL_PORTS'))
+        self.assertIn('/dev/rh-test',
+                      server.RaceContext.serverconfig.get_item('LOCAL_NODES', 'PORTS'))
+
+    def test_deactivating_everything_leaves_no_node_enabled(self):
+        self.ready()
+        server._set_active_node('eth:' + UID, 2)
+        self.assertTrue(server._set_active_node(''))
+        self.assertEqual((), self.registry.whitelist)
+        self.assertEqual([], server.RaceContext.serverconfig.get_item('GENERAL', 'SERIAL_PORTS'))
+        self.client.emit('load_ethnodes', {})
+        status = self.get_response('ethnodes_status')
+        self.assertEqual([], status['active'])
+
+    def test_activate_while_racing_is_refused(self):
+        self.ready()
+        server.RaceContext.race.race_status = RaceStatus.RACING
+        self.client.emit('ethnodes_activate', {'key': 'eth:' + UID, 'channels': 2})
+        received = self.client.get_received()
+        self.find(received, 'ethnodes_status')
+        self.assertEqual((), self.registry.whitelist)
+        self.assertIn('message', self.find(received, 'priority_message'))
+
+    def test_subsystem_toggle_writes_the_switch(self):
+        self.ready()
+        self.client.emit('ethnodes_subsystem', {'enabled': False})
+        status = self.get_response('ethnodes_status')
+        self.assertFalse(status['subsystem']['enabled'])
+        self.assertEqual('off', status['uplink']['state'])
 
     #
     # 确认接入（READY 门）

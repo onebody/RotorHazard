@@ -52,9 +52,8 @@ def initialize(rhapi):
     # 只 import 本包的子模块，不该被这些依赖拖起来。
     from AdminAuth import check_auth
     from RHRace import RaceStatus
-    from interface_mapper import InterfaceType
 
-    # ctx 只读：HTTP 守卫要 racecontext，配网在线判据要 RH-ENE 接口对象。
+    # ctx 只读：HTTP 守卫要 racecontext，relay 表要 mapper 的串口口列表。
     ctx = rhapi._racecontext
 
     def settings():
@@ -123,17 +122,30 @@ def initialize(rhapi):
         return relay_view.relay_rows(devices, nodes, tags_now(), local_ports(),
                                      host, port)
 
-    def gateway_watcher():
-        '''配网后的 online 判据：本机 ETHNODE 接口出现任何在线会话。'''
+    def gateway_watcher(mac=None):
+        '''配网后的 online 判据：网关 /api/nodes 里有这台中继的在线会话。
+
+        中继连的是网关（serve.mjs），不是本机 RH 的 ETHNODE 接口，所以判据
+        只能读网关节点表（spec §2/§3.5 红线：不发 WS attach）。
+        '''
         def watch(url):
-            for meta in ctx.interface.mapped_interfaces:
-                if meta.type != InterfaceType.ETHNODE:
-                    continue
-                sessions = getattr(meta.interface, 'sessions', None) or {}
-                return any(not session.offline for session in sessions.values()
-                           if not session.superseded)
-            return False
+            host, port = gateway_cfg()
+            reply = gateway_client.fetch_nodes(
+                gateway_client.gateway_base(host, port))
+            return reply['ok'] and gateway_client.relay_online(reply['nodes'],
+                                                               mac)
         return watch
+
+    def send_relay_table(devices=None):
+        '''广播中继表；给了 devices 就复用（usb_list 刚枚举过，别再排队 5 秒）。'''
+        try:
+            table = relay_snapshot(devices)
+        except Exception as exc:
+            logger.exception('relay refresh failed')
+            table = {'rows': [], 'others': [], 'error': str(exc)}
+        host, port = gateway_cfg()
+        rhapi.ui.socket_send('relay_table', dict(
+            table, gateway={'host': host, 'port': port}))
 
     def on_list(data):
         if not USB_LOCK.acquire(blocking=False):
@@ -148,6 +160,9 @@ def initialize(rhapi):
             'devices': devices,
             'flash': flash_state(current),
             'settings': settings_payload()})
+        # 中继表随枚举一起回：首屏只需一次串口扫描，不会再出现
+        # 「并发 relay_refresh 撞锁 → 表空 + A USB job is running」。
+        send_relay_table(devices)
 
     def on_probe(data):
         port = (data or {}).get('port')
@@ -225,7 +240,8 @@ def initialize(rhapi):
                         'error': 'gateway not configured '
                                  '(USB_FLASH/GATEWAY_HOST, GATEWAY_PORT)'}
             return dict(provision.provision_relay(
-                port, host, port_num, gateway_nodes=gateway_watcher()),
+                port, host, port_num,
+                gateway_nodes=gateway_watcher(device.get('mac'))),
                 mode='wireless')
         if kind in ('eth', 'c5'):
             current = settings()
@@ -329,15 +345,10 @@ def initialize(rhapi):
                                  {'busy': True, 'rows': [], 'others': []})
             return
         try:
-            table = relay_snapshot()
-        except Exception as exc:
-            logger.exception('relay refresh failed')
-            table = {'rows': [], 'others': [], 'error': str(exc)}
+            devices = usb_ops.enumerate_devices()
         finally:
             USB_LOCK.release()
-        host, port = gateway_cfg()
-        rhapi.ui.socket_send('relay_table', dict(
-            table, gateway={'host': host, 'port': port}))
+        send_relay_table(devices)
 
     def on_relay_tag(data):
         '''只改显示：不过 READY 门（赛中想改备注不该改不动）。'''
@@ -368,6 +379,36 @@ def initialize(rhapi):
             'ok': ok, 'action': 'tag', 'node_port': node_port,
             'relay_mac': device['mac'],
             'error': None if ok else 'config write failed'})
+
+    def on_relay_reconnect(data):
+        '''重连 WiFi；给了 ssid 就先改 SSID/密码再 NET SAVE。赛中拒绝——会断掉跑数据的那条链路。'''
+        data = data or {}
+        usb_port = data.get('usb_port')
+        ssid = (data.get('ssid') or '').strip() or None
+        password = data.get('password') or None
+        if not usb_port:
+            rhapi.ui.socket_send('relay_reconnect_result', {
+                'ok': False, 'usb_port': usb_port, 'error': 'usb_port is required'})
+            return
+        if refuse_if_racing():
+            rhapi.ui.socket_send('relay_reconnect_result', {
+                'ok': False, 'refused': True, 'usb_port': usb_port,
+                'error': 'active race'})
+            return
+        if not USB_LOCK.acquire(blocking=False):
+            rhapi.ui.socket_send('relay_reconnect_result', {
+                'ok': False, 'usb_port': usb_port, 'error': 'busy'})
+            return
+
+        def job():
+            device = usb_ops.probe_one(usb_port)
+            if device.get('kind') != 'relay':
+                return {'ok': False,
+                        'error': 'not a relay (kind={})'.format(device.get('kind'))}
+            return provision.reconnect_relay(
+                usb_port, gateway_nodes=gateway_watcher(device.get('mac')),
+                ssid=ssid, password=password)
+        spawn('relay_reconnect_result', job, {'usb_port': usb_port})
 
     def on_relay_unbind(data):
         node_port = (data or {}).get('node_port')
@@ -437,6 +478,7 @@ def initialize(rhapi):
                           ('usb_test', on_test),
                           ('usb_save_settings', on_save_settings),
                           ('relay_refresh', on_relay_refresh),
+                          ('relay_reconnect', on_relay_reconnect),
                           ('relay_tag', on_relay_tag),
                           ('relay_unbind', on_relay_unbind),
                           ('relay_retarget', on_relay_retarget)]:

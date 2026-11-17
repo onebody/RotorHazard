@@ -21,6 +21,7 @@ sys.path.append(os.path.join(_SRC_DIR, 'interface'))
 
 from plugins.rh_usb_flash.usb_ops import (cached_ip_for, enumerate_devices,
                                     flash_and_verify, fresh_boot,
+                                    is_serial_candidate, list_serial_ports,
                                     pio_available, probe_one)
 from plugins.rh_usb_flash.usb_probe import ProbeError
 
@@ -104,6 +105,54 @@ class Enumeration(unittest.TestCase):
                                     probe=probe)
         self.assertEqual(['/dev/cu.a', '/dev/cu.b'], probe.probed)
         self.assertEqual(['relay', 'c5'], [d['kind'] for d in devices])
+
+
+class PortFiltering(unittest.TestCase):
+    '''真枚举降噪：伪串口（macOS debug-console/蓝牙等）不进入探测队列。'''
+
+    def test_usb_serial_with_vid_is_candidate(self):
+        entry = SimpleNamespace(device='/dev/cu.usbmodem21201',
+                                hwid='USB VID:PID=303A:1001', vid=0x303A)
+        self.assertTrue(is_serial_candidate(entry))
+
+    def test_pseudo_port_without_vid_and_na_hwid_is_skipped(self):
+        entry = SimpleNamespace(device='/dev/cu.debug-console',
+                                hwid='n/a', vid=None)
+        self.assertFalse(is_serial_candidate(entry))
+
+    def test_onboard_uart_with_real_hwid_is_candidate(self):
+        entry = SimpleNamespace(device='/dev/ttyS0', hwid='PNP0501', vid=None)
+        self.assertTrue(is_serial_candidate(entry))
+
+    def test_real_enumeration_skips_pseudo_ports(self):
+        try:
+            from serial.tools import list_ports
+        except ImportError:
+            self.skipTest('pyserial not installed')
+        entries = [SimpleNamespace(device='/dev/cu.debug-console',
+                                  hwid='n/a', vid=None),
+                   SimpleNamespace(device='/dev/cu.Bluetooth-Incoming-Port',
+                                   hwid='n/a', vid=None),
+                   SimpleNamespace(device='/dev/cu.usbmodem21201',
+                                   hwid='USB VID:PID=303A:1001', vid=0x303A)]
+        orig = list_ports.comports
+        list_ports.comports = lambda: list(entries)
+        self.addCleanup(setattr, list_ports, 'comports', orig)
+        self.assertEqual(['/dev/cu.usbmodem21201'],
+                         [e.device for e in list_serial_ports()])
+
+    def test_keeps_all_when_nothing_matches(self):
+        try:
+            from serial.tools import list_ports
+        except ImportError:
+            self.skipTest('pyserial not installed')
+        entries = [SimpleNamespace(device='/dev/cu.debug-console',
+                                   hwid='n/a', vid=None)]
+        orig = list_ports.comports
+        list_ports.comports = lambda: list(entries)
+        self.addCleanup(setattr, list_ports, 'comports', orig)
+        self.assertEqual(['/dev/cu.debug-console'],
+                         [e.device for e in list_serial_ports()])
 
 
 class ProbeOne(unittest.TestCase):

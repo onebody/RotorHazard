@@ -39,17 +39,33 @@ def probe_one(port_path, probe=None):
     return item
 
 
+def is_serial_candidate(entry):
+    '''真枚举降噪判据：跳过 OS 伪串口（macOS 的 debug-console、蓝牙口等）。
+
+    pyserial 对这些口报 hwid='n/a' 且无 vid/pid；真实 USB 串口带 VID，板载
+    UART 的 hwid 也不是 'n/a'。探测一个伪口要白等 3×1.5s 应答窗口。
+    '''
+    hwid = (getattr(entry, 'hwid', '') or '').strip()
+    return getattr(entry, 'vid', None) is not None or hwid not in ('', 'n/a')
+
+
+def list_serial_ports():
+    '''真枚举口列表：滤掉伪串口；全被滤掉时原样返回，避免误判成「无设备」。'''
+    from serial.tools import list_ports
+    found = list(list_ports.comports())
+    return [entry for entry in found if is_serial_candidate(entry)] or found
+
+
 def enumerate_devices(ports=None, probe=None):
     '''串口枚举 + 逐口探测分类。probe 失败的口记 unknown 不炸整个列表。
 
-    ports 为 None 时真枚举（serial.tools.list_ports.comports()）；测试注入
+    ports 为 None 时真枚举（list_serial_ports，已滤掉伪串口）；测试注入
     SimpleNamespace(device=..., description=...) 列表。
     '''
     if probe is None:
         probe = probe_device
     if ports is None:
-        from serial.tools import list_ports
-        ports = list_ports.comports()
+        ports = list_serial_ports()
     devices = []
     for entry in ports:
         item = probe_one(entry.device, probe=probe)

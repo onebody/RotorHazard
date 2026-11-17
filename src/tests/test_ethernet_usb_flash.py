@@ -28,6 +28,7 @@ from plugins.rh_usb_flash.netplan import (NoCandidateSubnet, alive_probe, arp_en
                                     parse_default_gateway, parse_ifconfig,
                                     pick_free_ip, pick_gateway_host)
 from plugins.rh_usb_flash.provision import (plan_relay_commands, provision_relay,
+                                            reconnect_relay,
                                       relay_target_url)
 from plugins.rh_usb_flash.usb_devices import classify_device, parse_info_line
 from plugins.rh_usb_flash.usb_probe import ProbeError, probe_device
@@ -581,7 +582,11 @@ class RelayProvision(unittest.TestCase):
             def write(self, data):
                 text = data.decode().strip()
                 written.append(text)
-                self._pending = script.get(text, 'ERR command\n').encode()
+                value = script.get(text, 'ERR command\n')
+                # 同一命令可给 list：按顺序消费，最后一个留着重复回（NET STATUS 用）。
+                if isinstance(value, list):
+                    value = value.pop(0) if len(value) > 1 else value[0]
+                self._pending = value.encode()
 
             def flush(self):
                 pass
@@ -592,9 +597,12 @@ class RelayProvision(unittest.TestCase):
             _pending = b''
         return FakeSerial, written
 
-    def status(self, url):
-        return ('NET {{"url":"{}","on":true,"sta":3,"ws":1,'
-                '"ip4":"192.168.31.119","rssi":-52}}\n').format(url)
+    def status(self, url, ssid=None, sta='3', ip4='192.168.31.119'):
+        body = '"url":"{}","on":true,"sta":{},"ws":1,' \
+               '"ip4":"{}","rssi":-52'.format(url, sta, ip4)
+        if ssid:
+            body += ',"ssid":"{}"'.format(ssid)
+        return 'NET {' + body + '}\n'
 
     def run_case(self, script, gateway=None):
         factory, written = self._fake(script)
@@ -607,6 +615,100 @@ class RelayProvision(unittest.TestCase):
                                  serial_factory=factory, respond_s=0.05,
                                  post_s=0.05, gateway_nodes=nodes)
         return result, written
+
+    def run_reconnect(self, script, gateway=None, ssid=None, password=None):
+        factory, written = self._fake(script)
+        polls = {'n': 0}
+
+        def nodes(url):
+            polls['n'] += 1
+            return gateway(polls['n']) if gateway else False
+        result = reconnect_relay('/dev/cu.fake', serial_factory=factory,
+                                 respond_s=0.05, post_s=0.05, wait_s=0.2,
+                                 gateway_nodes=nodes if gateway else None,
+                                 ssid=ssid, password=password)
+        return result, written
+
+    def test_reconnect_only_off_on_and_reports_online(self):
+        script = {'NET STATUS': self.status('ws://192.168.31.102:8011/node'),
+                  'NET OFF': 'OK\n', 'NET ON': 'OK\n'}
+        result, written = self.run_reconnect(script, gateway=lambda n: n >= 1)
+        self.assertEqual(['NET STATUS', 'NET OFF', 'NET ON', 'NET STATUS'], written)
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['online'])
+        self.assertEqual('ws://192.168.31.102:8011/node', result['url'])
+
+    def test_reconnect_without_gateway_uses_wifi_ip(self):
+        script = {'NET STATUS': self.status('ws://192.168.31.102:8011/node',
+                                            sta='true'),
+                  'NET OFF': 'OK\n', 'NET ON': 'OK\n'}
+        result, _ = self.run_reconnect(script, gateway=None)
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['wifi'], '真机固件把 sta 报成布尔 true')
+        self.assertFalse(result['online'])
+        self.assertEqual('192.168.31.119', result['ip4'])
+
+    def test_reconnect_reports_no_wifi_when_ip4_is_none(self):
+        script = {'NET STATUS': self.status('ws://192.168.31.102:8011/node',
+                                            sta='false', ip4='none'),
+                  'NET OFF': 'OK\n', 'NET ON': 'OK\n'}
+        result, _ = self.run_reconnect(script, gateway=None)
+        self.assertTrue(result['ok'])
+        self.assertFalse(result['wifi'])
+        self.assertIsNone(result['ip4'])
+
+    def test_reconnect_with_ssid_sets_credentials_then_saves(self):
+        script = {'NET STATUS': [
+                      self.status('ws://192.168.31.102:8011/node', ssid='OldAP'),
+                      self.status('ws://192.168.31.102:8011/node', ssid='MyAP')],
+                  'NET SSID MyAP': 'OK\n',
+                  'NET PASS secret': 'OK\n',
+                  'NET SAVE': 'OK\n',
+                  'NET OFF': 'OK\n', 'NET ON': 'OK\n'}
+        result, written = self.run_reconnect(script, ssid='MyAP', password='secret')
+        self.assertEqual(['NET STATUS', 'NET SSID MyAP', 'NET PASS secret',
+                          'NET SAVE', 'NET OFF', 'NET ON', 'NET STATUS'], written)
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['wifi'])
+        self.assertEqual('MyAP', result['ssid'])
+        self.assertNotIn('secret', str(result))
+
+    def test_reconnect_ssid_only_keeps_saved_password(self):
+        script = {'NET STATUS': self.status('ws://192.168.31.102:8011/node'),
+                  'NET SSID MyAP': 'OK\n', 'NET SAVE': 'OK\n',
+                  'NET OFF': 'OK\n', 'NET ON': 'OK\n'}
+        result, written = self.run_reconnect(script, ssid='MyAP')
+        self.assertEqual(['NET STATUS', 'NET SSID MyAP', 'NET SAVE',
+                          'NET OFF', 'NET ON', 'NET STATUS'], written)
+        self.assertTrue(result['ok'])
+
+    def test_reconnect_password_ignored_without_ssid(self):
+        script = {'NET STATUS': self.status('ws://192.168.31.102:8011/node'),
+                  'NET OFF': 'OK\n', 'NET ON': 'OK\n'}
+        _result, written = self.run_reconnect(script, password='secret')
+        self.assertEqual(['NET STATUS', 'NET OFF', 'NET ON', 'NET STATUS'], written)
+
+    def test_reconnect_surfaces_credential_failure_before_off(self):
+        script = {'NET STATUS': self.status('ws://192.168.31.102:8011/node'),
+                  'NET SSID MyAP': 'ERR net_ssid\n'}
+        result, written = self.run_reconnect(script, ssid='MyAP')
+        self.assertEqual(['NET STATUS', 'NET SSID MyAP'], written)
+        self.assertFalse(result['ok'])
+        self.assertIn('net_ssid', result['error'])
+
+    def test_reconnect_without_status_stops_before_off(self):
+        result, written = self.run_reconnect({})
+        self.assertEqual(['NET STATUS'], written)
+        self.assertFalse(result['ok'])
+        self.assertEqual('net_status', result['error'])
+
+    def test_reconnect_tolerates_debug_lines_around_ok(self):
+        '''真机 NET ON 的回复被 LED/PIPE 调试行包着，OK 也可能和 OFF 的 ACK 连成一行。'''
+        script = {'NET STATUS': self.status('ws://192.168.31.102:8011/node'),
+                  'NET OFF': '[LED] tick 1\nOK\n',
+                  'NET ON': 'WS_START → want_up=1\nOK OK\n[LED] tick 2\n'}
+        result, _ = self.run_reconnect(script)
+        self.assertTrue(result['ok'])
 
     def test_plan_idempotent_when_already_pointing_at_target(self):
         self.assertEqual([], plan_relay_commands(
