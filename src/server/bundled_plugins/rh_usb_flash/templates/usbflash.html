@@ -43,8 +43,22 @@
 	<p style="font-size:0.9em;opacity:0.8">{{ __('Wireless provisioning sends the gateway address to a relay. Wired provisioning rebuilds the firmware with that IP and flashes it.') }}</p>
 </div>
 
+<div class="control-set" id="wired-card">
+	<h4>{{ __('Wired node (C5 + W5500)') }}</h4>
+	<p style="font-size:0.9em;opacity:0.8">{{ __('The plugin dials tcp://IP:12345 through a bundled bridge and feeds it to RotorHazard as a serial node. This is the supported path — the wireless relay below is frozen (legacy).') }}</p>
+	<div class="control-set">
+		<label>{{ __('Node IP') }}: <input id="wired-host" size="16" value="{{ wired.host or '' }}" placeholder="192.168.0.98"></label>
+		<label>{{ __('Port') }}: <input id="wired-port" size="6" value="{{ wired.port or 12345 }}"></label>
+		<button id="wired-connect">{{ __('Connect wired node') }}</button>
+		<button id="wired-disconnect">{{ __('Disconnect') }}</button>
+	</div>
+	<div id="wired-status" class="priority-message"></div>
+</div>
+
 <div class="control-set" id="relay-table">
-	<h4>{{ __('Relays (wireless)') }}</h4>
+	<h4>{{ __('Relays (wireless)') }}
+		<span style="font-size:0.75em;background:#c8c8c8;color:#333;padding:2px 8px;border-radius:4px;margin-left:6px">{{ __('已冻结 FROZEN (legacy)') }}</span>
+	</h4>
 	<div id="relay-note" class="priority-message"></div>
 	<table style="width:100%">
 		<thead>
@@ -337,6 +351,45 @@
 				gateway_port: $('#usb-set-gw-port').val()
 			});
 		});
+
+		// ---- 有线模式（C5 + W5500）----
+		function wired_state_text(d) {
+			var map = {
+				online: '{{ __("Connected — RH sees the node") }}',
+				link: '{{ __("Bridge up, waiting for the node") }}',
+				bridge: '{{ __("Bridge dialing…") }}',
+				offline: '{{ __("Disconnected") }}'
+			};
+			var text = map[d.state] || d.state || '';
+			return text + ' — tcp://' + (d.host || '—') + ':' + (d.port || '—') +
+				(d.pid ? ' · pid ' + d.pid : '');
+		}
+
+		function render_wired_status(d) {
+			$('#wired-status').text(wired_state_text(d || {}));
+		}
+
+		socket.on('wired_status', render_wired_status);
+
+		socket.on('wired_result', function (r) {
+			usb_set_busy(false);
+			usb_log(__('Wired node') + ' [' + (r.action || '?') + ']: ' +
+				(r.ok ? 'OK' + (r.host ? ' tcp://' + r.host + ':' + (r.port || 12345) : '')
+				      : (r.error || 'failed')));
+			socket.emit('wired_refresh', {});
+		});
+
+		$('#wired-connect').click(function () {
+			usb_set_busy(true);
+			socket.emit('wired_connect', {
+				host: $('#wired-host').val(), port: $('#wired-port').val()
+			});
+		});
+		$('#wired-disconnect').click(function () {
+			usb_set_busy(true);
+			socket.emit('wired_disconnect', {});
+		});
+		render_wired_status({{ wired | tojson }});
 
 		function relay_state_text(row) {
 			var map = {

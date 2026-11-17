@@ -17,7 +17,7 @@ from flask import Response, render_template, request
 from flask.blueprints import Blueprint
 
 from . import (firmware_check, firmware_flash, gateway_client, netplan,
-               provision, relay_view, usb_ops)
+               provision, relay_view, usb_ops, wired_link)
 
 logger = logging.getLogger(__name__)
 
@@ -448,6 +448,143 @@ def initialize(rhapi):
                   usb_port, host, port_num, gateway_nodes=gateway_watcher()),
               {'usb_port': usb_port, 'host': host, 'port': port_num})
 
+    # ---- 有线模式（C5 + W5500 → TCP → bridge.py → PTY → RH 串口扫描）----
+    # 无线中继已冻结；有线是受支持的接入路径。桥进程由插件代跑（PID 落在
+    # USB_FLASH/WIRED_PID），服务重启后自动重拨（_autostart_wired）。
+
+    def wired_cfg_vals():
+        host = (rhapi.config.get(SECTION, wired_link.HOST_KEY) or '').strip()
+        raw = str(rhapi.config.get(SECTION, wired_link.PORT_KEY) or '').strip()
+        return host, (int(raw) if raw.isdigit() and int(raw) > 0
+                      else wired_link.DEFAULT_PORT)
+
+    def wired_payload():
+        host, port = wired_cfg_vals()
+        pid_raw = rhapi.config.get(SECTION, wired_link.PID_KEY)
+        running = bool(pid_raw) and wired_link.pid_alive(pid_raw)
+        serial_ports = [str(p) for p in
+                        (rhapi.config.get('GENERAL', 'SERIAL_PORTS') or [])]
+        return wired_link.status_payload(
+            host, port, int(pid_raw) if pid_raw else None,
+            running, os.path.exists(wired_link.LINK),
+            wired_link.LINK in serial_ports,
+            wired_link.LINK in (local_ports() or []))
+
+    def send_wired_status():
+        rhapi.ui.socket_broadcast('wired_status', wired_payload())
+
+    def _reload_nodes():
+        '''复用核心生命周期门（赛中拒绝）：重建接口让 RH 重扫串口清单。'''
+        try:
+            import server
+            return bool(server.reload_ethernet_nodes())
+        except Exception:
+            logger.exception('wired node reload failed')
+            return False
+
+    def _wired_spawn_job(host, port):
+        '''拨号 + 等 PTY 钉住；只管桥进程，不碰节点清单（自启动复用）。'''
+        pid_raw = rhapi.config.get(SECTION, wired_link.PID_KEY)
+        if pid_raw and wired_link.pid_alive(pid_raw):
+            wired_link.stop_pid(pid_raw)  # 换目标：旧的先停
+            gevent.sleep(0.5)
+        argv = wired_link.bridge_argv(
+            os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                         'bridge.py'), host, port)
+        log_path = os.path.join(settings()['cache_dir'], 'wired_bridge.log')
+        with open(log_path, 'ab') as logf:
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                                    stdout=logf, stderr=logf,
+                                    start_new_session=True)
+        for _ in range(10):  # bridge 启动 <1s，5s 余量足够
+            if os.path.exists(wired_link.LINK):
+                break
+            gevent.sleep(0.5)
+        if not os.path.exists(wired_link.LINK):
+            raise RuntimeError(
+                'bridge failed to create PTY (see wired_bridge.log)')
+        for key, value in [(wired_link.PID_KEY, str(proc.pid)),
+                           (wired_link.HOST_KEY, host),
+                           (wired_link.PORT_KEY, str(port))]:
+            rhapi.config.set(SECTION, key, value)
+        return proc.pid
+
+    def on_wired_connect(data):
+        data = data or {}
+        parsed = wired_link.parse_hostport(data, *wired_cfg_vals())
+        if parsed is None:
+            rhapi.ui.socket_send('wired_result', {
+                'ok': False, 'action': 'connect',
+                'error': 'node IP is required (W5500 TCP 12345)'})
+            return
+        host, port = parsed
+        if refuse_if_racing():
+            rhapi.ui.socket_send('wired_result', {
+                'ok': False, 'refused': True, 'action': 'connect',
+                'error': 'active race'})
+            return
+
+        def job():
+            pid = _wired_spawn_job(host, port)
+            write_tags(wired_link.merge_tag(tags_now(), host=host))
+            known = list(rhapi.config.get('LOCAL_NODES', 'PORTS') or [])
+            if wired_link.LINK not in known:
+                rhapi.config.set('LOCAL_NODES', 'PORTS',
+                                 known + [wired_link.LINK])
+            # 单选语义（与核心 _set_active_node 的 serial 路径一致）
+            ports = [p for p in
+                     (rhapi.config.get('GENERAL', 'SERIAL_PORTS') or [])
+                     if p != wired_link.LINK]
+            rhapi.config.set('GENERAL', 'SERIAL_PORTS',
+                             ports + [wired_link.LINK])
+            reloaded = _reload_nodes()
+            send_wired_status()
+            return {'ok': bool(reloaded), 'pid': pid, 'host': host,
+                    'port': port,
+                    'error': None if reloaded
+                    else 'reload failed (race active or interface error)'}
+        spawn('wired_result', job, {'action': 'connect'})
+
+    def on_wired_disconnect(data):
+        if refuse_if_racing():
+            rhapi.ui.socket_send('wired_result', {
+                'ok': False, 'refused': True, 'action': 'disconnect',
+                'error': 'active race'})
+            return
+        pid_raw = rhapi.config.get(SECTION, wired_link.PID_KEY)
+        if pid_raw:
+            wired_link.stop_pid(pid_raw)
+        rhapi.config.set(SECTION, wired_link.PID_KEY, '')
+        ports = [p for p in
+                 (rhapi.config.get('GENERAL', 'SERIAL_PORTS') or [])
+                 if p != wired_link.LINK]
+        rhapi.config.set('GENERAL', 'SERIAL_PORTS', ports)
+        write_tags(wired_link.drop_tag(tags_now()))
+        reloaded = _reload_nodes()
+        rhapi.ui.socket_send('wired_result', {
+            'ok': bool(reloaded), 'action': 'disconnect',
+            'error': None if reloaded else 'reload failed'})
+        send_wired_status()
+
+    def on_wired_refresh(data):
+        send_wired_status()
+
+    def _autostart_wired():
+        '''服务重启后自动重拨：只拉桥，不动节点清单（接口尚未初始化）。'''
+        host, port = wired_cfg_vals()
+        if not host:
+            return
+        pid_raw = rhapi.config.get(SECTION, wired_link.PID_KEY)
+        if pid_raw and wired_link.pid_alive(pid_raw):
+            return
+
+        def job():
+            try:
+                _wired_spawn_job(host, port)
+            except Exception as exc:
+                logger.warning('wired autostart failed: %s', exc)
+        gevent.spawn(job)
+
     def page():
         if not check_auth(ctx, request.authorization):
             return _authenticate()
@@ -466,6 +603,7 @@ def initialize(rhapi):
                 for env, desc in sorted(firmware_flash.FLASH_ENVS.items())],
             'usb_settings': settings_payload(),
             'relay_ports': local_ports(),
+            'wired': wired_payload(),
         })
 
     rhapi.config.register_section(SECTION)
@@ -481,12 +619,17 @@ def initialize(rhapi):
                           ('relay_reconnect', on_relay_reconnect),
                           ('relay_tag', on_relay_tag),
                           ('relay_unbind', on_relay_unbind),
-                          ('relay_retarget', on_relay_retarget)]:
+                          ('relay_retarget', on_relay_retarget),
+                          ('wired_connect', on_wired_connect),
+                          ('wired_disconnect', on_wired_disconnect),
+                          ('wired_refresh', on_wired_refresh)]:
         rhapi.ui.socket_listen(name, handler, requires_auth=True)
 
     BLUEPRINT.add_url_rule('/usbflash', 'usbflash', page)
     rhapi.ui.blueprint_add(BLUEPRINT)
     _registered = True
+    # 有线桥自启动（配置过 WIRED_HOST 才生效）；gevent 已 patch，无阻塞。
+    _autostart_wired()
 
 
 def _subprocess_run(cmd, **kwargs):
